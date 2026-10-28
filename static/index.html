@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Журнал съёмок</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --ink: #1d2226; --muted: #6b7378;
+    --line: #e2e0d8; --accent: #2f5d6e; --warm: #b07a3a; --warn: #a8432f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #15191b; --panel: #1d2225; --ink: #e6e4de; --muted: #8e979c;
+            --line: #2c3337; --accent: #7fb0c2; --warm: #d3a26a; --warn: #e07a64; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 24px; padding: 16px 24px;
+           border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 3; }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+  nav button { background: none; border: 0; color: var(--muted); font: inherit; padding: 6px 2px;
+               margin-right: 14px; cursor: pointer; border-bottom: 2px solid transparent; }
+  nav button.active { color: var(--ink); border-color: var(--accent); }
+  nav .count { font-size: 12px; color: var(--muted); margin-left: 4px; }
+  .spacer { flex: 1; }
+  .btn { background: var(--accent); color: var(--panel); border: 0; border-radius: 6px;
+         padding: 7px 14px; font: inherit; cursor: pointer; white-space: nowrap; }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .link { background: none; border: 0; color: var(--accent); font: inherit; cursor: pointer; padding: 0; }
+  #status { color: var(--muted); font-size: 13px; text-align: right; }
+  #status.error { color: var(--warn); cursor: pointer; }
+  main { padding: 16px 24px 60px; max-width: 1200px; }
+
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 10px; }
+  .toolbar input[type=search] { width: 260px; border: 1px solid var(--line); background: var(--panel); padding: 6px 10px; }
+  .toolbar select { width: auto; border: 1px solid var(--line); background: var(--panel); padding: 5px 8px; }
+  .toolbar label { display: flex; gap: 6px; align-items: center; color: var(--muted); cursor: pointer; white-space: nowrap; }
+  .toolbar label input { width: auto; }
+  .summary { color: var(--muted); margin-bottom: 10px; font-size: 13px; }
+  .summary b { color: var(--ink); font-weight: 600; }
+  .stats { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-bottom: 12px; font-size: 13px; color: var(--muted); }
+  .stats b { color: var(--ink); font-size: 15px; font-weight: 600; margin-right: 3px; }
+  .stats .warn b { color: var(--warn); }
+
+  table { width: 100%; border-collapse: collapse; background: var(--panel);
+          border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 500; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover, th.sorted { color: var(--ink); }
+  tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.date { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .month td { background: var(--bg); color: var(--warm); font-weight: 600; font-size: 12px;
+              text-transform: uppercase; letter-spacing: .06em; padding: 6px 10px; }
+  td select, td input, td textarea { font: inherit; color: var(--ink); background: transparent;
+         border: 1px solid transparent; border-radius: 5px; padding: 3px 6px; width: 100%; }
+  select, input, textarea { font: inherit; color: var(--ink); border-radius: 5px; }
+  td select:hover, td input:hover, td textarea:hover { border-color: var(--line); }
+  select:focus, input:focus, textarea:focus { outline: none; border-color: var(--accent) !important; background: var(--bg); }
+  textarea { resize: vertical; min-height: 28px; }
+  .noloc select { color: var(--warn); }
+  .nocoord { color: var(--warn); font-size: 12px; }
+  .tag { font-size: 12px; color: var(--muted); }
+  .muted { color: var(--muted); }
+  a { color: var(--accent); }
+  mark { background: color-mix(in srgb, var(--warm) 35%, transparent); color: inherit; border-radius: 2px; }
+  .add { display: flex; gap: 8px; margin-top: 14px; max-width: 640px; }
+  .add input { border: 1px solid var(--line); background: var(--panel); padding: 6px 10px; width: 100%; }
+  .empty { padding: 24px; text-align: center; color: var(--muted); }
+  .hidden { display: none; }
+  @media (max-width: 760px) {
+    header { flex-wrap: wrap; gap: 10px; padding: 12px 16px; }
+    main { padding: 12px 16px 40px; }
+    .hide-sm { display: none; }
+    .toolbar input[type=search] { width: 100%; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Журнал съёмок</h1>
+  <nav>
+    <button data-tab="days" class="active">Дни<span class="count" id="nav-days"></span></button>
+    <button data-tab="locations">Места<span class="count" id="nav-locs"></span></button>
+  </nav>
+  <div class="spacer"></div>
+  <span id="status"></span>
+  <button class="btn" id="sync">Обновить из каталога</button>
+</header>
+
+<main>
+  <!-- ДНИ -->
+  <section id="tab-days">
+    <div class="toolbar">
+      <input type="search" id="d-q" placeholder="Поиск: место, заметка, папка">
+      <select id="d-year"><option value="">Все годы</option></select>
+      <select id="d-kind">
+        <option value="">Все типы</option>
+        <option value="place">Места</option>
+        <option value="trip">Поездки</option>
+        <option value="other">Не места</option>
+      </select>
+      <label><input type="checkbox" id="d-noloc"> без места</label>
+      <label><input type="checkbox" id="d-nocoord"> без координат</label>
+      <label><input type="checkbox" id="d-notes"> с заметками</label>
+      <button class="link" id="d-reset">сбросить</button>
+    </div>
+    <div class="summary" id="days-summary"></div>
+    <table>
+      <thead><tr>
+        <th>Дата</th><th>Место</th><th class="hide-sm">Время</th>
+        <th class="num">Кадров</th><th class="num">Отобр.</th><th style="width:36%">Заметки</th>
+      </tr></thead>
+      <tbody id="days-body"></tbody>
+    </table>
+  </section>
+
+  <!-- МЕСТА -->
+  <section id="tab-locations" class="hidden">
+    <div class="stats" id="loc-stats"></div>
+    <div class="toolbar">
+      <input type="search" id="l-q" placeholder="Поиск по названию">
+      <select id="l-kind">
+        <option value="">Все типы</option>
+        <option value="place">Места</option>
+        <option value="trip">Поездки</option>
+        <option value="other">Не места</option>
+      </select>
+      <label><input type="checkbox" id="l-nocoord"> без координат</label>
+      <label><input type="checkbox" id="l-nodays"> без дней</label>
+      <button class="link" id="l-reset">сбросить</button>
+    </div>
+    <div class="summary" id="loc-summary"></div>
+    <table>
+      <thead><tr>
+        <th class="sortable" data-sort="name">Место</th>
+        <th>Координаты</th>
+        <th class="num sortable" data-sort="days">Дней</th>
+        <th class="hide-sm sortable" data-sort="last">Последний выезд</th>
+        <th class="hide-sm">Найти</th>
+        <th>Тип</th>
+        <th style="width:18%">Объединить с…</th>
+      </tr></thead>
+      <tbody id="loc-body"></tbody>
+    </table>
+    <form class="add" id="add-loc">
+      <input name="name" placeholder="Новое место">
+      <input name="coords" placeholder="59.93, 30.31">
+      <button class="btn">Добавить</button>
+    </form>
+    <div class="summary" style="margin-top:10px">Координаты можно скопировать из Яндекс.Карт: правый клик по точке → «Что здесь?» → скопировать «59.93, 30.31».</div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const MONTHS = ["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
+const KIND_LABEL = { place: "место", trip: "поездка", other: "не место" };
+let days = [], locations = [];
+let locSort = { key: "days", dir: -1 };
+
+// --- общее -------------------------------------------------------------------
+async function api(path, opts = {}) {
+  const r = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || r.statusText);
+  return data;
+}
+function status(text, ms = 3000) {
+  const el = $("#status");
+  el.textContent = text;
+  el.classList.toggle("error", text.startsWith("Ошибка"));
+  el.title = el.classList.contains("error") ? "Нажми, чтобы скрыть" : "";
+  // Ошибки висят, пока не кликнешь по ним; обычные сообщения исчезают сами
+  if (ms && !el.classList.contains("error"))
+    setTimeout(() => { if (el.textContent === text) el.textContent = ""; }, ms);
+}
+const esc = s => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const norm = s => (s ?? "").toString().toLowerCase().replace(/ё/g, "е");
+const hm = iso => iso ? iso.slice(11, 16) : "";
+const dmy = iso => iso ? iso.split("-").reverse().join(".") : "";
+const plural = (n, one, few, many) =>
+  n % 10 === 1 && n % 100 !== 11 ? one : [2,3,4].includes(n % 10) && ![12,13,14].includes(n % 100) ? few : many;
+
+// Подсветка найденного в тексте (без учёта регистра и ё)
+function hl(text, q) {
+  const t = text ?? "";
+  if (!q) return esc(t);
+  const i = norm(t).indexOf(q);
+  if (i < 0) return esc(t);
+  return esc(t.slice(0, i)) + "<mark>" + esc(t.slice(i, i + q.length)) + "</mark>" + esc(t.slice(i + q.length));
+}
+
+// Фильтры запоминаются в браузере (если хранилище доступно)
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const FILTERS = {
+  days: ["d-q", "d-year", "d-kind", "d-noloc", "d-nocoord", "d-notes"],
+  locs: ["l-q", "l-kind", "l-nocoord", "l-nodays"],
+};
+function readFilters(ids) {
+  const f = {};
+  for (const id of ids) { const el = $("#" + id); f[id] = el.type === "checkbox" ? el.checked : el.value; }
+  return f;
+}
+function restoreFilters(ids, key) {
+  const saved = store.get(key, {});
+  for (const id of ids) {
+    const el = $("#" + id);
+    if (!(id in saved)) continue;
+    if (el.type === "checkbox") el.checked = saved[id]; else el.value = saved[id];
+  }
+}
+
+async function loadAll() {
+  [locations, days] = await Promise.all([api("/api/locations"), api("/api/days")]);
+  fillYears();
+  $("#nav-days").textContent = days.length;
+  $("#nav-locs").textContent = locations.length;
+  renderDays();
+  renderLocations();
+}
+
+// --- ДНИ ---------------------------------------------------------------------
+function fillYears() {
+  const sel = $("#d-year"), cur = sel.value || store.get("days-filters", {})["d-year"] || "";
+  const years = [...new Set(days.map(d => d.date.slice(0, 4)))].sort().reverse();
+  sel.innerHTML = `<option value="">Все годы</option>` +
+    years.map(y => `<option value="${y}">${y} · ${days.filter(d => d.date.startsWith(y)).length}</option>`).join("");
+  sel.value = years.includes(cur) ? cur : "";
+}
+
+function dayMatches(d, f) {
+  if (f["d-year"] && !d.date.startsWith(f["d-year"])) return false;
+  if (f["d-kind"] && !d.locations.some(l => l.kind === f["d-kind"])) return false;
+  if (f["d-noloc"] && d.locations.length) return false;
+  if (f["d-nocoord"] && !d.locations.some(l => l.kind === "place" && l.lat == null)) return false;
+  if (f["d-notes"] && !(d.notes || "").trim()) return false;
+  const q = norm(f["d-q"].trim());
+  if (q) {
+    const hay = norm([d.locations.map(l => l.name).join(" "), d.source_name, d.source_folder, d.notes, d.date, dmy(d.date)].join(" | "));
+    if (!hay.includes(q)) return false;
+  }
+  return true;
+}
+
+function renderDays() {
+  const f = readFilters(FILTERS.days);
+  store.set("days-filters", f);
+  const q = norm(f["d-q"].trim());
+  const shown = days.filter(d => dayMatches(d, f));
+
+  const noLoc = shown.filter(d => !d.locations.length).length;
+  const noCoord = shown.filter(d => d.locations.some(l => l.kind === "place" && l.lat == null)).length;
+  const photos = shown.reduce((s, d) => s + d.photo_count, 0);
+  const sel = shown.reduce((s, d) => s + d.selected_count, 0);
+  const filtered = shown.length !== days.length;
+  $("#days-summary").innerHTML =
+    (filtered ? `Показано <b>${shown.length}</b> из ${days.length} ${plural(days.length, "дня", "дней", "дней")}`
+              : `<b>${days.length}</b> ${plural(days.length, "день", "дня", "дней")}`) +
+    ` · кадров <b>${photos.toLocaleString("ru")}</b>, отобрано <b>${sel.toLocaleString("ru")}</b>` +
+    (noLoc ? ` · без места: ${noLoc}` : "") + (noCoord ? ` · без координат: ${noCoord}` : "");
+
+  let html = "", month = "";
+  for (const d of shown) {
+    const m = d.date.slice(0, 7);
+    if (m !== month) {
+      month = m;
+      html += `<tr class="month"><td colspan="6">${MONTHS[+m.slice(5) - 1]} ${m.slice(0, 4)}</td></tr>`;
+    }
+    const kinds = [...new Set(d.locations.map(l => l.kind))].filter(k => k !== "place");
+    const noCoords = d.locations.filter(l => l.kind === "place" && l.lat == null).map(l => l.name);
+    const label = d.locations.length ? d.locations.map(l => l.name).join(" + ") : "— без места —";
+    // В списке пока одна опция — остальные подгружаются при открытии (так страница не тормозит)
+    html += `<tr data-id="${d.id}" class="${d.locations.length ? "" : "noloc"}">
+      <td class="date">${d.date.slice(8)}.${d.date.slice(5, 7)}</td>
+      <td><select class="loc"><option value="keep" selected>${esc(label)}</option></select>
+          ${q && norm(label).includes(q) ? `<div class="tag">${hl(label, q)}</div>` : ""}
+          ${kinds.length ? `<div class="tag">${kinds.map(k => KIND_LABEL[k]).join(", ")}</div>` : ""}
+          ${noCoords.length ? `<div class="nocoord">нет координат${d.locations.length > 1 ? ": " + esc(noCoords.join(", ")) : ""}</div>` : ""}
+          ${d.location_manual ? '<div class="tag">задано вручную</div>' : ""}
+          ${q && d.source_folder && norm(d.source_folder).includes(q) ? `<div class="tag">папка: ${hl(d.source_folder, q)}</div>` : ""}</td>
+      <td class="hide-sm muted">${hm(d.first_shot)}–${hm(d.last_shot)}</td>
+      <td class="num">${d.photo_count}</td>
+      <td class="num">${d.selected_count}</td>
+      <td><textarea class="notes" rows="1" placeholder="Заметки…">${esc(d.notes)}</textarea></td>
+    </tr>`;
+  }
+  $("#days-body").innerHTML = html || `<tr><td colspan="6" class="empty">${
+    days.length ? "Ничего не найдено — попробуй ослабить фильтры." : "Пока пусто — нажми «Обновить из каталога»."}</td></tr>`;
+}
+
+// Полный список мест подставляется в выпадающий список только при открытии
+function fillLocSelect(sel) {
+  if (sel.dataset.filled) return;
+  const d = days.find(x => x.id === +sel.closest("tr").dataset.id);
+  const ids = d.locations.map(l => l.id);
+  const sorted = [...locations].sort((a, b) => a.name.localeCompare(b.name, "ru"));
+  sel.innerHTML =
+    (ids.length > 1 ? `<option value="keep" selected>${esc(d.locations.map(l => l.name).join(" + "))}</option>` : "") +
+    `<option value="" ${ids.length ? "" : "selected"}>— без места —</option>` +
+    sorted.map(l => `<option value="${l.id}" ${ids.length === 1 && ids[0] === l.id ? "selected" : ""}>${esc(l.name)}</option>`).join("");
+  sel.dataset.filled = "1";
+}
+$("#days-body").addEventListener("mousedown", e => { if (e.target.classList.contains("loc")) fillLocSelect(e.target); });
+$("#days-body").addEventListener("focusin", e => { if (e.target.classList.contains("loc")) fillLocSelect(e.target); });
+
+$("#days-body").addEventListener("change", async e => {
+  const tr = e.target.closest("tr[data-id]");
+  if (!tr) return;
+  const id = +tr.dataset.id;
+  try {
+    if (e.target.classList.contains("loc")) {
+      const v = e.target.value;
+      if (v === "keep") return;
+      await api(`/api/days/${id}`, { method: "PUT", body: JSON.stringify({ location_ids: v ? [+v] : [] }) });
+      status("Место сохранено");
+      await loadAll();
+    } else if (e.target.classList.contains("notes")) {
+      await api(`/api/days/${id}`, { method: "PUT", body: JSON.stringify({ notes: e.target.value }) });
+      const d = days.find(x => x.id === id); if (d) d.notes = e.target.value;
+      status("Заметка сохранена");
+    }
+  } catch (err) { status("Ошибка: " + err.message, 6000); }
+});
+
+// --- МЕСТА -------------------------------------------------------------------
+function renderLocStats() {
+  const by = k => locations.filter(l => l.kind === k).length;
+  const places = locations.filter(l => l.kind === "place");
+  const noCoord = places.filter(l => l.lat == null);
+  const noCoordFreq = noCoord.filter(l => l.day_count >= 3).length;
+  const withDays = places.filter(l => l.day_count > 0).length;
+  $("#loc-stats").innerHTML = `
+    <span><b>${locations.length}</b>всего</span>
+    <span><b>${by("place")}</b>${plural(by("place"), "место", "места", "мест")}</span>
+    <span><b>${by("trip")}</b>${plural(by("trip"), "поездка", "поездки", "поездок")}</span>
+    <span><b>${by("other")}</b>не мест</span>
+    <span class="${noCoord.length ? "warn" : ""}"><b>${noCoord.length}</b>мест без координат</span>
+    ${noCoordFreq ? `<span class="warn"><b>${noCoordFreq}</b>из них с 3+ выездами — начни с них</span>` : ""}
+    <span><b>${places.length - noCoord.length}</b>с координатами</span>
+    ${withDays < places.length ? `<span><b>${places.length - withDays}</b>без дней</span>` : ""}`;
+}
+
+function renderLocations() {
+  renderLocStats();
+  const f = readFilters(FILTERS.locs);
+  store.set("locs-filters", f);
+  const q = norm(f["l-q"].trim());
+  let shown = locations.filter(l =>
+    (!f["l-kind"] || l.kind === f["l-kind"]) &&
+    (!f["l-nocoord"] || (l.lat == null && l.kind === "place")) &&
+    (!f["l-nodays"] || !l.day_count) &&
+    (!q || norm(l.name).includes(q)));
+
+  const cmp = {
+    name: (a, b) => a.name.localeCompare(b.name, "ru"),
+    days: (a, b) => (a.day_count - b.day_count) || -a.name.localeCompare(b.name, "ru"),
+    last: (a, b) => (a.last_date || "").localeCompare(b.last_date || ""),
+  }[locSort.key];
+  shown.sort((a, b) => cmp(a, b) * locSort.dir);
+  document.querySelectorAll("#tab-locations th.sortable").forEach(th => {
+    const on = th.dataset.sort === locSort.key;
+    th.classList.toggle("sorted", on);
+    th.textContent = th.textContent.replace(/ [↑↓]$/, "") + (on ? (locSort.dir > 0 ? " ↑" : " ↓") : "");
+  });
+
+  $("#loc-summary").innerHTML = shown.length !== locations.length
+    ? `Показано <b>${shown.length}</b> из ${locations.length}` : "";
+
+  $("#loc-body").innerHTML = shown.map(l => `
+    <tr data-id="${l.id}">
+      <td>${hl(l.name, q)}</td>
+      <td><input class="coords" value="${l.lat != null ? `${+l.lat.toFixed(5)}, ${+l.lon.toFixed(5)}` : ""}" placeholder="${l.kind === "place" ? "нет координат" : "—"}"></td>
+      <td class="num">${l.day_count}</td>
+      <td class="hide-sm muted">${dmy(l.last_date)}</td>
+      <td class="hide-sm"><a target="_blank" href="https://yandex.ru/maps/?text=${encodeURIComponent(l.name + ", Ленинградская область")}">Карта</a></td>
+      <td><select class="kind">${Object.entries(KIND_LABEL).map(([k, t]) =>
+        `<option value="${k}" ${l.kind === k ? "selected" : ""}>${t}</option>`).join("")}</select></td>
+      <td><select class="merge"><option value="">—</option></select></td>
+    </tr>`).join("") || `<tr><td colspan="7" class="empty">${
+      locations.length ? "Ничего не найдено." : "Мест пока нет."}</td></tr>`;
+}
+
+function fillMergeSelect(sel) {
+  if (sel.dataset.filled) return;
+  const id = +sel.closest("tr").dataset.id;
+  sel.innerHTML = `<option value="">—</option>` + [...locations]
+    .filter(o => o.id !== id).sort((a, b) => a.name.localeCompare(b.name, "ru"))
+    .map(o => `<option value="${o.id}">${esc(o.name)} · ${o.day_count}</option>`).join("");
+  sel.dataset.filled = "1";
+}
+$("#loc-body").addEventListener("mousedown", e => { if (e.target.classList.contains("merge")) fillMergeSelect(e.target); });
+$("#loc-body").addEventListener("focusin", e => { if (e.target.classList.contains("merge")) fillMergeSelect(e.target); });
+
+$("#loc-body").addEventListener("change", async e => {
+  const tr = e.target.closest("tr[data-id]");
+  if (!tr) return;
+  const id = +tr.dataset.id;
+  try {
+    if (e.target.classList.contains("merge")) {
+      const into = +e.target.value;
+      if (!into) return;
+      const src = locations.find(l => l.id === id), dst = locations.find(l => l.id === into);
+      if (!confirm(`Объединить «${src.name}» с «${dst.name}»?\n\nВсе дни «${src.name}» перейдут в «${dst.name}», а при следующих синхронизациях папки с названием «${src.name}» будут попадать туда же.`)) {
+        e.target.value = ""; return;
+      }
+      await api(`/api/locations/${id}/merge`, { method: "POST", body: JSON.stringify({ into }) });
+      status(`«${src.name}» → «${dst.name}»`);
+      await loadAll();
+    } else if (e.target.classList.contains("kind")) {
+      await api(`/api/locations/${id}`, { method: "PUT", body: JSON.stringify({ kind: e.target.value }) });
+      locations.find(l => l.id === id).kind = e.target.value;
+      renderLocStats();
+      status("Тип сохранён");
+    } else if (e.target.classList.contains("coords")) {
+      await api(`/api/locations/${id}`, { method: "PUT", body: JSON.stringify({ coords: e.target.value }) });
+      const l = locations.find(x => x.id === id);
+      const parts = e.target.value.split(/[,;\s]+/).filter(Boolean);
+      [l.lat, l.lon] = parts.length === 2 ? [+parts[0], +parts[1]] : [null, null];
+      renderLocStats();
+      status("Координаты сохранены");
+    }
+  } catch (err) { status("Ошибка: " + err.message, 6000); }
+});
+
+document.querySelectorAll("#tab-locations th.sortable").forEach(th => th.addEventListener("click", () => {
+  const key = th.dataset.sort;
+  locSort = locSort.key === key ? { key, dir: -locSort.dir } : { key, dir: key === "name" ? 1 : -1 };
+  store.set("locs-sort", locSort);
+  renderLocations();
+}));
+
+$("#add-loc").addEventListener("submit", async e => {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    await api("/api/locations", { method: "POST", body: JSON.stringify({ name: f.name.value, coords: f.coords.value }) });
+    f.reset(); status("Место добавлено");
+    await loadAll();
+  } catch (err) { status("Ошибка: " + err.message, 6000); }
+});
+
+// --- фильтры, вкладки, синхронизация ----------------------------------------
+for (const id of FILTERS.days) $("#" + id).addEventListener("input", renderDays);
+for (const id of FILTERS.locs) $("#" + id).addEventListener("input", renderLocations);
+$("#d-reset").addEventListener("click", () => {
+  for (const id of FILTERS.days) { const el = $("#" + id); el.type === "checkbox" ? el.checked = false : el.value = ""; }
+  renderDays();
+});
+$("#l-reset").addEventListener("click", () => {
+  for (const id of FILTERS.locs) { const el = $("#" + id); el.type === "checkbox" ? el.checked = false : el.value = ""; }
+  renderLocations();
+});
+
+$("#sync").addEventListener("click", async () => {
+  const b = $("#sync"); b.disabled = true; status("Читаю каталог…", 0);
+  try {
+    const r = await api("/api/sync", { method: "POST" });
+    status(`Готово: ${r.days} дн. (новых ${r.created}, удалено ${r.removed}) · правил ${r.rules} · дублей убрано ${r.duplicates} · исключено ${r.excluded}`, 10000);
+    await loadAll();
+  } catch (err) { status("Ошибка: " + err.message, 8000); }
+  b.disabled = false;
+});
+
+$("#status").addEventListener("click", () => { if ($("#status").classList.contains("error")) status(""); });
+
+function showTab(tab) {
+  document.querySelectorAll("nav button").forEach(x => x.classList.toggle("active", x.dataset.tab === tab));
+  $("#tab-days").classList.toggle("hidden", tab !== "days");
+  $("#tab-locations").classList.toggle("hidden", tab !== "locations");
+  store.set("tab", tab);
+}
+document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
+
+restoreFilters(FILTERS.days, "days-filters");
+restoreFilters(FILTERS.locs, "locs-filters");
+locSort = store.get("locs-sort", locSort);
+showTab(store.get("tab", "days"));
+loadAll().catch(err => status("Ошибка: " + err.message, 8000));
+</script>
+</body>
+</html>
