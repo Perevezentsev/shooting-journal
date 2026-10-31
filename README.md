@@ -22,6 +22,7 @@ FastAPI · SQLite · HTML/JS · чтение `.lrcat` (Lightroom Classic хра�
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp config.example.json config.json   # указать путь к своему каталогу Lightroom
+cp locations.example.txt locations.txt   # необязательно: правила для мест (дубли, составные названия, типы)
 ./run.sh                             # → http://localhost:8765
 ```
 
