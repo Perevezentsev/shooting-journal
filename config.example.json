@@ -1,14 +1,9 @@
 {
-  "catalog_path": "/mnt/c/Users/Алексей/Pictures/Lightroom/Lightroom Catalog.lrcat",
-  "root_priority": ["D:/", "E:/", "F:/"],
+  "catalog_path": "/mnt/c/Users/<имя>/Pictures/Lightroom/Lightroom Catalog.lrcat",
+  "root_priority": ["D:/", "E:/"],
   "exclude": [
     "C:/Users/",
-    "/С телефона/",
-    "/Для блога/",
-    "лучшее",
-    "/Виды птиц/",
-    "/Стикеры/",
-    "D:/Видео/",
-    "Untitled Export"
+    "Untitled Export",
+    "/Экспорт/"
   ]
 }
