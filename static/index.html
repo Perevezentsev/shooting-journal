@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Журнал съёмок</title>
+<link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
+<script src="/static/vendor/leaflet/leaflet.js"></script>
 <style>
   :root {
     --bg: #f6f5f1; --panel: #ffffff; --ink: #1d2226; --muted: #6b7378;
@@ -70,6 +72,38 @@
   .add input { border: 1px solid var(--line); background: var(--panel); padding: 6px 10px; width: 100%; }
   .empty { padding: 24px; text-align: center; color: var(--muted); }
   .hidden { display: none; }
+
+  /* --- Карта --- */
+  main.wide { max-width: none; padding: 0; }
+  .map-wrap { display: flex; height: calc(100vh - 69px); }
+  #map { flex: 1; min-width: 0; background: var(--bg); }
+  #placer { width: 340px; flex-shrink: 0; overflow-y: auto; padding: 16px; background: var(--panel);
+            border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 12px; }
+  #placer h2 { font-size: 15px; margin: 0; font-weight: 600; }
+  #placer .place-name { font-size: 18px; font-weight: 600; }
+  #placer .progress { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+  #placer .progress div { height: 100%; background: var(--accent); }
+  #placer form { display: flex; gap: 6px; }
+  #placer input[type=search] { flex: 1; border: 1px solid var(--line); background: var(--bg); padding: 6px 10px; }
+  .results { display: flex; flex-direction: column; gap: 4px; }
+  .results button { text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+                    padding: 6px 8px; font: inherit; font-size: 13px; color: var(--ink); cursor: pointer; }
+  .results button:hover, .results button.on { border-color: var(--accent); }
+  .results small { display: block; color: var(--muted); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  .btn.small { padding: 4px 10px; font-size: 13px; }
+  .hint { font-size: 12px; color: var(--muted); }
+  .legend { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+  .leaflet-popup-content { font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .leaflet-popup-content b { font-size: 14px; }
+  .leaflet-container { font: inherit; }
+  @media (max-width: 760px) {
+    .map-wrap { flex-direction: column-reverse; height: auto; }
+    #map { height: 60vh; flex: none; }
+    #placer { width: auto; border-right: 0; border-top: 1px solid var(--line); }
+  }
   @media (max-width: 760px) {
     header { flex-wrap: wrap; gap: 10px; padding: 12px 16px; }
     main { padding: 12px 16px 40px; }
@@ -84,6 +118,7 @@
   <nav>
     <button data-tab="days" class="active">Дни<span class="count" id="nav-days"></span></button>
     <button data-tab="locations">Места<span class="count" id="nav-locs"></span></button>
+    <button data-tab="map">Карта<span class="count" id="nav-map"></span></button>
   </nav>
   <div class="spacer"></div>
   <span id="status"></span>
@@ -139,7 +174,7 @@
         <th>Координаты</th>
         <th class="num sortable" data-sort="days">Дней</th>
         <th class="hide-sm sortable" data-sort="last">Последний выезд</th>
-        <th class="hide-sm">Найти</th>
+        <th class="hide-sm">Карта</th>
         <th>Тип</th>
         <th style="width:18%">Объединить с…</th>
       </tr></thead>
@@ -150,7 +185,14 @@
       <input name="coords" placeholder="59.93, 30.31">
       <button class="btn">Добавить</button>
     </form>
-    <div class="summary" style="margin-top:10px">Координаты можно скопировать из Яндекс.Карт: правый клик по точке → «Что здесь?» → скопировать «59.93, 30.31».</div>
+    <div class="summary" style="margin-top:10px">Координаты удобнее ставить на вкладке «Карта» — режим «Расставить координаты». Можно и вписать вручную: «59.93, 30.31».</div>
+  </section>
+  <!-- КАРТА -->
+  <section id="tab-map" class="hidden">
+    <div class="map-wrap">
+      <aside id="placer"></aside>
+      <div id="map"></div>
+    </div>
   </section>
 </main>
 
@@ -223,6 +265,7 @@ async function loadAll() {
   $("#nav-locs").textContent = locations.length;
   renderDays();
   renderLocations();
+  renderMap();
 }
 
 // --- ДНИ ---------------------------------------------------------------------
@@ -378,7 +421,7 @@ function renderLocations() {
       <td><input class="coords" value="${l.lat != null ? `${+l.lat.toFixed(5)}, ${+l.lon.toFixed(5)}` : ""}" placeholder="${l.kind === "place" ? "нет координат" : "—"}"></td>
       <td class="num">${l.day_count}</td>
       <td class="hide-sm muted">${dmy(l.last_date)}</td>
-      <td class="hide-sm"><a target="_blank" href="https://yandex.ru/maps/?text=${encodeURIComponent(l.name + ", Ленинградская область")}">Карта</a></td>
+      <td class="hide-sm"><button class="link to-map">${l.lat != null ? "показать" : "указать"}</button></td>
       <td><select class="kind">${Object.entries(KIND_LABEL).map(([k, t]) =>
         `<option value="${k}" ${l.kind === k ? "selected" : ""}>${t}</option>`).join("")}</select></td>
       <td><select class="merge"><option value="">—</option></select></td>
@@ -395,6 +438,13 @@ function fillMergeSelect(sel) {
   sel.dataset.filled = "1";
 }
 $("#loc-body").addEventListener("mousedown", e => { if (e.target.classList.contains("merge")) fillMergeSelect(e.target); });
+$("#loc-body").addEventListener("click", e => {
+  if (!e.target.classList.contains("to-map")) return;
+  const id = +e.target.closest("tr").dataset.id;
+  showTab("map");
+  const l = locations.find(x => x.id === id);
+  if (l.lat != null) focusPlace(id); else startPlacing([id]);
+});
 $("#loc-body").addEventListener("focusin", e => { if (e.target.classList.contains("merge")) fillMergeSelect(e.target); });
 
 $("#loc-body").addEventListener("change", async e => {
@@ -445,6 +495,237 @@ $("#add-loc").addEventListener("submit", async e => {
   } catch (err) { status("Ошибка: " + err.message, 6000); }
 });
 
+
+// --- КАРТА -------------------------------------------------------------------
+// Подложки: топографическая (рельеф, болота, тропы), обычная OSM, спутник.
+const LAYERS = {
+  "Топо": () => L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+    { maxZoom: 17, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>, © <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)' }),
+  "Схема": () => L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    { maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' }),
+  "Спутник": () => L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    { maxZoom: 19, attribution: "Снимки © Esri, Maxar, Earthstar Geographics" }),
+};
+const KIND_COLOR = { place: "#2f7d96", trip: "#b07a3a", other: "#8e979c" };
+let map = null, markersLayer = null, candidate = null, mapFitted = false;
+const markers = new Map();               // id места → маркер
+let placing = null;                      // { queue: [id], pos, skipped: Set, single }
+
+function initMap() {
+  if (map) return;
+  if (typeof L === "undefined") {
+    $("#placer").innerHTML = `<div class="nocoord">Не загрузилась библиотека карты (static/vendor/leaflet).</div>`;
+    return;
+  }
+  L.Icon.Default.imagePath = "/static/vendor/leaflet/images/";
+  map = L.map("map", { zoomControl: true }).setView([59.9, 30.3], 8);
+  const base = {};
+  for (const [name, make] of Object.entries(LAYERS)) base[name] = make();
+  const saved = store.get("map-layer", "Топо");
+  (base[saved] || base["Топо"]).addTo(map);
+  L.control.layers(base, null, { position: "topright" }).addTo(map);
+  map.on("baselayerchange", e => store.set("map-layer", e.name));
+  L.control.scale({ imperial: false }).addTo(map);
+  markersLayer = L.layerGroup().addTo(map);
+  map.on("click", e => { if (placing) setCandidate(e.latlng.lat, e.latlng.lng, "клик по карте"); });
+  renderMap(true);
+}
+
+function placeQueue() {
+  return locations
+    .filter(l => l.kind === "place" && l.lat == null)
+    .sort((a, b) => (b.day_count - a.day_count) || a.name.localeCompare(b.name, "ru"))
+    .map(l => l.id);
+}
+
+function renderMap(fit = false) {
+  const placed = locations.filter(l => l.lat != null);
+  const places = locations.filter(l => l.kind === "place");
+  const done = places.filter(l => l.lat != null).length;
+  $("#nav-map").textContent = places.length ? `${done}/${places.length}` : "";
+  if (!map) return;
+  markersLayer.clearLayers(); markers.clear();
+  for (const l of placed) {
+    const m = L.circleMarker([l.lat, l.lon], {
+      radius: 5 + Math.sqrt(l.day_count || 0) * 2.2,
+      color: "#fff", weight: 1.5, fillColor: KIND_COLOR[l.kind] || KIND_COLOR.place, fillOpacity: .85,
+    }).bindPopup(() => popupHtml(l)).bindTooltip(esc(l.name), { direction: "top", offset: [0, -6] });
+    m.addTo(markersLayer); markers.set(l.id, m);
+  }
+  if ((fit || !mapFitted) && placed.length) {
+    mapFitted = true;
+    const local = placed.filter(l => l.kind === "place");
+    map.fitBounds(L.latLngBounds((local.length ? local : placed).map(l => [l.lat, l.lon])).pad(.15), { maxZoom: 11 });
+  }
+  if (!placing) renderPlacerIdle();
+}
+
+function popupHtml(l) {
+  return `<b>${esc(l.name)}</b><br>
+    ${l.day_count} ${plural(l.day_count, "выезд", "выезда", "выездов")}${l.last_date ? ", последний " + dmy(l.last_date) : ""}<br>
+    <span class="muted">${l.lat.toFixed(5)}, ${l.lon.toFixed(5)} · ${KIND_LABEL[l.kind]}</span><br>
+    <button class="link" onclick="startPlacing([${l.id}])">переставить точку</button> ·
+    <a target="_blank" href="https://yandex.ru/maps/?pt=${l.lon},${l.lat}&z=14&l=map">Яндекс.Карты</a>`;
+}
+
+function focusPlace(id) {
+  initMap();
+  const l = locations.find(x => x.id === id);
+  if (!map || !l || l.lat == null) return;
+  setTimeout(() => {
+    map.invalidateSize();
+    map.setView([l.lat, l.lon], 13);
+    markers.get(id)?.openPopup();
+  }, 50);
+}
+
+function renderPlacerIdle() {
+  const q = placeQueue();
+  const places = locations.filter(l => l.kind === "place");
+  $("#placer").innerHTML = `
+    <h2>Места на карте</h2>
+    <div class="summary" style="margin:0">С координатами <b>${places.length - q.length}</b> из ${places.length}</div>
+    <div class="progress"><div style="width:${places.length ? (places.length - q.length) / places.length * 100 : 0}%"></div></div>
+    ${q.length ? `<button class="btn" id="start-placing">Расставить координаты · ${q.length}</button>
+      <div class="hint">Сначала самые частые места. Журнал сам поищет каждое на карте — останется подтвердить или кликнуть точнее.</div>`
+      : `<div class="hint">У всех мест есть координаты.</div>`}
+    <div class="legend">
+      <span><i style="background:${KIND_COLOR.place}"></i>место (чем больше кружок, тем больше выездов)</span>
+      <span><i style="background:${KIND_COLOR.trip}"></i>поездка</span>
+    </div>`;
+  $("#start-placing")?.addEventListener("click", () => startPlacing());
+}
+
+// --- режим «Расставить координаты» ---
+function startPlacing(ids) {
+  initMap();
+  if (!map) return;
+  const single = !!ids;
+  placing = { queue: ids || placeQueue(), pos: 0, skipped: new Set(), single };
+  showPlace();
+}
+
+function stopPlacing() {
+  placing = null; clearCandidate();
+  renderMap();
+}
+
+function currentPlace() {
+  return placing && locations.find(l => l.id === placing.queue[placing.pos]);
+}
+
+function showPlace() {
+  clearCandidate();
+  const l = currentPlace();
+  if (!l) { status(placing.single ? "Готово" : "Очередь закончилась"); stopPlacing(); return; }
+  const total = placing.queue.length, n = placing.pos + 1;
+  $("#placer").innerHTML = `
+    <div class="row" style="justify-content:space-between">
+      <h2>${placing.single ? "Точка места" : `Расстановка · ${n} из ${total}`}</h2>
+      <button class="link" id="pl-stop">закончить</button>
+    </div>
+    ${placing.single ? "" : `<div class="progress"><div style="width:${(n - 1) / total * 100}%"></div></div>`}
+    <div>
+      <div class="place-name">${esc(l.name)}</div>
+      <div class="hint">${l.day_count} ${plural(l.day_count, "выезд", "выезда", "выездов")}${l.last_date ? ", последний " + dmy(l.last_date) : ""}</div>
+    </div>
+    <form id="pl-search">
+      <input type="search" id="pl-q" value="${esc(l.name)}, Ленинградская область">
+      <button class="btn small">Найти</button>
+    </form>
+    <div class="results" id="pl-results"><div class="hint">Ищу…</div></div>
+    <div class="hint">Или кликни по карте. Маркер можно перетащить.</div>
+    <div class="row">
+      <button class="btn" id="pl-save" disabled>Сохранить</button>
+      ${placing.single ? "" : `<button class="btn ghost" id="pl-skip">Пропустить</button>`}
+    </div>
+    <div class="row hint">Это не место?
+      <button class="link" data-kind="trip">поездка</button>
+      <button class="link" data-kind="other">не место</button>
+    </div>`;
+  $("#pl-stop").addEventListener("click", stopPlacing);
+  $("#pl-save").addEventListener("click", saveCandidate);
+  $("#pl-skip")?.addEventListener("click", nextPlace);
+  $("#pl-search").addEventListener("submit", e => { e.preventDefault(); geocode($("#pl-q").value, false); });
+  document.querySelectorAll("#placer [data-kind]").forEach(b => b.addEventListener("click", () => setKind(l, b.dataset.kind)));
+  if (l.lat != null) setCandidate(l.lat, l.lon, "текущая точка", false);
+  geocode($("#pl-q").value, true);
+}
+
+async function geocode(q, auto) {
+  const box = $("#pl-results");
+  const id = currentPlace()?.id;
+  box.innerHTML = `<div class="hint">Ищу…</div>`;
+  try {
+    let res = await api("/api/geocode?q=" + encodeURIComponent(q));
+    // Не нашлось с областью — пробуем просто название
+    if (!res.length && auto && q.includes(",")) res = await api("/api/geocode?q=" + encodeURIComponent(q.split(",")[0]));
+    if (currentPlace()?.id !== id) return;          // пока искали, перешли к другому месту
+    if (!res.length) { box.innerHTML = `<div class="hint">Ничего не нашлось — уточни запрос или кликни по карте.</div>`; return; }
+    box.innerHTML = res.map((r, i) => `
+      <button type="button" data-i="${i}">${esc(r.name.split(",").slice(0, 2).join(","))}
+        <small>${esc(r.name.split(",").slice(2, 5).join(",").trim())}${r.type ? " · " + esc(r.type) : ""}</small></button>`).join("");
+    box.querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
+      const r = res[+b.dataset.i];
+      box.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+      setCandidate(r.lat, r.lon, "из поиска");
+    }));
+    // Первый вариант сразу на карту, если точки ещё нет
+    if (auto && currentPlace()?.lat == null) box.querySelector("button").click();
+  } catch (err) {
+    box.innerHTML = `<div class="nocoord">Поиск недоступен: ${esc(err.message)}. Можно кликнуть по карте.</div>`;
+  }
+}
+
+function setCandidate(lat, lon, source, fly = true) {
+  clearCandidate();
+  candidate = L.marker([lat, lon], { draggable: true, autoPan: true }).addTo(map);
+  candidate.on("dragend", () => { if (!$("#pl-save")) return; $("#pl-save").disabled = false; });
+  if (fly) map.flyTo([lat, lon], Math.max(map.getZoom(), 12), { duration: .6 });
+  else map.setView([lat, lon], Math.max(map.getZoom(), 12));
+  const btn = $("#pl-save");
+  if (btn) btn.disabled = source === "текущая точка";
+}
+
+function clearCandidate() { if (candidate) { candidate.remove(); candidate = null; } }
+
+async function saveCandidate() {
+  const l = currentPlace();
+  if (!l || !candidate) return;
+  const { lat, lng } = candidate.getLatLng();
+  try {
+    await api(`/api/locations/${l.id}`, { method: "PUT", body: JSON.stringify({ coords: `${lat.toFixed(6)}, ${lng.toFixed(6)}` }) });
+    l.lat = +lat.toFixed(6); l.lon = +lng.toFixed(6);
+    status(`«${l.name}» — точка сохранена`);
+    renderMap(); renderLocations(); renderDays();
+    nextPlace();
+  } catch (err) { status("Ошибка: " + err.message, 6000); }
+}
+
+async function setKind(l, kind) {
+  try {
+    await api(`/api/locations/${l.id}`, { method: "PUT", body: JSON.stringify({ kind }) });
+    l.kind = kind;
+    status(`«${l.name}» — ${KIND_LABEL[kind]}`);
+    renderLocations(); renderDays();
+    nextPlace();
+  } catch (err) { status("Ошибка: " + err.message, 6000); }
+}
+
+function nextPlace() {
+  if (!placing) return;
+  if (placing.single) { stopPlacing(); return; }
+  placing.pos += 1;
+  showPlace();
+}
+
+// Enter в режиме расстановки — сохранить (если фокус не в поле поиска)
+document.addEventListener("keydown", e => {
+  if (!placing || e.key !== "Enter" || e.target.id === "pl-q") return;
+  const b = $("#pl-save");
+  if (b && !b.disabled) { e.preventDefault(); saveCandidate(); }
+});
+
 // --- фильтры, вкладки, синхронизация ----------------------------------------
 for (const id of FILTERS.days) $("#" + id).addEventListener("input", renderDays);
 for (const id of FILTERS.locs) $("#" + id).addEventListener("input", renderLocations);
@@ -471,9 +752,10 @@ $("#status").addEventListener("click", () => { if ($("#status").classList.contai
 
 function showTab(tab) {
   document.querySelectorAll("nav button").forEach(x => x.classList.toggle("active", x.dataset.tab === tab));
-  $("#tab-days").classList.toggle("hidden", tab !== "days");
-  $("#tab-locations").classList.toggle("hidden", tab !== "locations");
+  for (const t of ["days", "locations", "map"]) $("#tab-" + t).classList.toggle("hidden", tab !== t);
+  document.querySelector("main").classList.toggle("wide", tab === "map");
   store.set("tab", tab);
+  if (tab === "map") { initMap(); setTimeout(() => map.invalidateSize(), 0); }
 }
 document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
 

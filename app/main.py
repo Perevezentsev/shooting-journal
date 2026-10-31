@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 import traceback
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import db
@@ -20,6 +24,7 @@ RULES_PATH = ROOT / "locations.txt"
 STATIC = ROOT / "static"
 
 app = FastAPI(title="Журнал съёмок")
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
 def load_config() -> dict:
@@ -170,3 +175,48 @@ def api_merge_location(loc_id: int, body: MergeIn):
             raise HTTPException(404, str(e))
         conn.commit()
     return {"ok": True}
+
+
+# --- Поиск мест на карте (геокодер OpenStreetMap Nominatim) ------------------
+# Правила Nominatim: не чаще 1 запроса в секунду и понятный User-Agent.
+# Ответы кэшируем, чтобы не спрашивать одно и то же дважды.
+
+_geo_cache: dict[str, list] = {}
+_geo_lock = threading.Lock()
+_geo_last = 0.0
+# Ленинградская область с запасом — результаты отсюда идут первыми
+LENOBL_VIEWBOX = "27.3,61.4,35.8,58.3"
+
+
+@app.get("/api/geocode")
+def api_geocode(q: str):
+    global _geo_last
+    q = q.strip()
+    if not q:
+        return []
+    if q in _geo_cache:
+        return _geo_cache[q]
+    with _geo_lock:
+        wait = 1.1 - (time.time() - _geo_last)
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            r = httpx.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={"q": q, "format": "jsonv2", "limit": 6, "accept-language": "ru",
+                        "countrycodes": "ru,kz", "viewbox": LENOBL_VIEWBOX, "bounded": 0},
+                headers={"User-Agent": "shooting-journal/0.1 (personal photo log)"},
+                timeout=15,
+            )
+            r.raise_for_status()
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"Геокодер недоступен: {e}")
+        finally:
+            _geo_last = time.time()
+    results = [
+        {"name": x.get("display_name", ""), "lat": float(x["lat"]), "lon": float(x["lon"]),
+         "type": x.get("addresstype") or x.get("type", "")}
+        for x in r.json()
+    ]
+    _geo_cache[q] = results
+    return results
