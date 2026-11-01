@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import db
-from .locations import KINDS, merge_locations
+from .locations import KINDS, merge_locations, set_day_locations
 from .sync import sync_catalog
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -56,6 +56,13 @@ def api_sync():
 
 # --- Дни ---------------------------------------------------------------------
 
+def _spots(conn) -> tuple[dict[int, dict], dict[int, dict]]:
+    """Все точки и точки по умолчанию по местам."""
+    spots = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM spots")}
+    defaults = {s["location_id"]: s for s in spots.values() if s["is_default"]}
+    return spots, defaults
+
+
 @app.get("/api/days")
 def api_days():
     with db.connect() as conn:
@@ -68,14 +75,22 @@ def api_days():
         """):
             locs.setdefault(r["day_id"], []).append(
                 {"id": r["id"], "name": r["name"], "lat": r["lat"], "lon": r["lon"], "kind": r["kind"]})
+        spots, defaults = _spots(conn)
     for d in days:
         d["locations"] = locs.get(d["id"], [])
+        # Точка дня: указанная явно, иначе точка по умолчанию (если место одно)
+        spot, by_default = spots.get(d["spot_id"]), False
+        if spot is None and len(d["locations"]) == 1:
+            spot, by_default = defaults.get(d["locations"][0]["id"]), True
+        d["spot"] = ({"id": spot["id"], "name": spot["name"], "lat": spot["lat"], "lon": spot["lon"],
+                      "facing": spot["facing"], "by_default": by_default} if spot else None)
     return days
 
 
 class DayUpdate(BaseModel):
     notes: str | None = None
     location_ids: list[int] | None = None   # задать места вручную ([] — без места)
+    spot_id: int | None = None              # точка дня; null — вернуть «по умолчанию»
 
 
 @app.put("/api/days/{day_id}")
@@ -86,10 +101,14 @@ def api_update_day(day_id: int, body: DayUpdate):
         if body.notes is not None:
             conn.execute("UPDATE days SET notes = ? WHERE id = ?", (body.notes, day_id))
         if body.location_ids is not None:
-            conn.execute("DELETE FROM day_locations WHERE day_id = ?", (day_id,))
-            conn.executemany("INSERT OR IGNORE INTO day_locations VALUES (?, ?)",
-                             [(day_id, i) for i in body.location_ids])
+            set_day_locations(conn, day_id, body.location_ids)
             conn.execute("UPDATE days SET location_manual = 1 WHERE id = ?", (day_id,))
+        if "spot_id" in body.model_fields_set:
+            if body.spot_id is not None and not conn.execute(
+                    """SELECT 1 FROM spots s JOIN day_locations dl ON dl.location_id = s.location_id
+                       WHERE s.id = ? AND dl.day_id = ?""", (body.spot_id, day_id)).fetchone():
+                raise HTTPException(400, "Эта точка не относится к месту этого дня")
+            conn.execute("UPDATE days SET spot_id = ? WHERE id = ?", (body.spot_id, day_id))
         conn.commit()
     return {"ok": True}
 
@@ -101,7 +120,8 @@ def api_locations():
     with db.connect() as conn:
         rows = conn.execute("""
             SELECT l.*, COUNT(d.id) AS day_count, MAX(d.date) AS last_date,
-                   (SELECT COUNT(*) FROM location_aliases a WHERE a.location_id = l.id) AS alias_count
+                   (SELECT COUNT(*) FROM location_aliases a WHERE a.location_id = l.id) AS alias_count,
+                   (SELECT COUNT(*) FROM spots s WHERE s.location_id = l.id) AS spot_count
             FROM locations l
             LEFT JOIN day_locations dl ON dl.location_id = l.id
             LEFT JOIN days d ON d.id = dl.day_id
@@ -173,6 +193,103 @@ def api_merge_location(loc_id: int, body: MergeIn):
             merge_locations(conn, loc_id, body.into)
         except ValueError as e:
             raise HTTPException(404, str(e))
+        conn.commit()
+    return {"ok": True}
+
+
+# --- Точки внутри мест -------------------------------------------------------
+
+FACING = {"С": 0, "СВ": 45, "В": 90, "ЮВ": 135, "Ю": 180, "ЮЗ": 225, "З": 270, "СЗ": 315}
+
+
+class SpotIn(BaseModel):
+    name: str | None = None
+    coords: str | None = None
+    facing: int | None = None       # градусы, куда смотрит берег; null — не задано
+    is_default: bool | None = None
+    note: str | None = None
+
+
+def _set_default(conn, loc_id: int, spot_id: int, on: bool) -> None:
+    if on:
+        conn.execute("UPDATE spots SET is_default = 0 WHERE location_id = ?", (loc_id,))
+    conn.execute("UPDATE spots SET is_default = ? WHERE id = ?", (1 if on else 0, spot_id))
+
+
+@app.get("/api/spots")
+def api_spots():
+    with db.connect() as conn:
+        rows = conn.execute("""
+            SELECT s.*, l.name AS location_name,
+                   (SELECT COUNT(*) FROM days d WHERE d.spot_id = s.id) AS day_count
+            FROM spots s JOIN locations l ON l.id = s.location_id
+            ORDER BY l.name, s.is_default DESC, s.name
+        """).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/locations/{loc_id}/spots")
+def api_create_spot(loc_id: int, body: SpotIn):
+    if not (body.name or "").strip():
+        raise HTTPException(400, "Нужно название точки")
+    lat, lon = parse_coords(body.coords or "")
+    if lat is None:
+        raise HTTPException(400, "Нужны координаты точки")
+    if body.facing is not None and not 0 <= body.facing < 360:
+        raise HTTPException(400, "Направление — градусы от 0 до 359")
+    with db.connect() as conn:
+        if not conn.execute("SELECT 1 FROM locations WHERE id = ?", (loc_id,)).fetchone():
+            raise HTTPException(404, "Место не найдено")
+        first = not conn.execute("SELECT 1 FROM spots WHERE location_id = ?", (loc_id,)).fetchone()
+        spot_id = conn.execute(
+            "INSERT INTO spots(location_id, name, lat, lon, facing, note) VALUES (?, ?, ?, ?, ?, ?)",
+            (loc_id, body.name.strip(), lat, lon, body.facing, body.note)).lastrowid
+        # Первая точка места сразу становится точкой по умолчанию, если не сказано иное
+        _set_default(conn, loc_id, spot_id, body.is_default if body.is_default is not None else first)
+        conn.commit()
+    return {"id": spot_id}
+
+
+@app.put("/api/spots/{spot_id}")
+def api_update_spot(spot_id: int, body: SpotIn):
+    with db.connect() as conn:
+        spot = conn.execute("SELECT * FROM spots WHERE id = ?", (spot_id,)).fetchone()
+        if not spot:
+            raise HTTPException(404, "Точка не найдена")
+        f = body.model_fields_set
+        if "name" in f and (body.name or "").strip():
+            conn.execute("UPDATE spots SET name = ? WHERE id = ?", (body.name.strip(), spot_id))
+        if "coords" in f:
+            lat, lon = parse_coords(body.coords or "")
+            if lat is None:
+                raise HTTPException(400, "Нужны координаты точки")
+            conn.execute("UPDATE spots SET lat = ?, lon = ? WHERE id = ?", (lat, lon, spot_id))
+        if "facing" in f:
+            if body.facing is not None and not 0 <= body.facing < 360:
+                raise HTTPException(400, "Направление — градусы от 0 до 359")
+            conn.execute("UPDATE spots SET facing = ? WHERE id = ?", (body.facing, spot_id))
+        if "note" in f:
+            conn.execute("UPDATE spots SET note = ? WHERE id = ?", (body.note, spot_id))
+        if "is_default" in f and body.is_default is not None:
+            _set_default(conn, spot["location_id"], spot_id, body.is_default)
+        conn.commit()
+    return {"ok": True}
+
+
+@app.delete("/api/spots/{spot_id}")
+def api_delete_spot(spot_id: int):
+    with db.connect() as conn:
+        spot = conn.execute("SELECT * FROM spots WHERE id = ?", (spot_id,)).fetchone()
+        if not spot:
+            raise HTTPException(404, "Точка не найдена")
+        # Дни с этой точкой вернутся к точке по умолчанию (ON DELETE SET NULL)
+        conn.execute("DELETE FROM spots WHERE id = ?", (spot_id,))
+        # Удалили точку по умолчанию — ею становится первая из оставшихся
+        if spot["is_default"]:
+            nxt = conn.execute("SELECT id FROM spots WHERE location_id = ? ORDER BY id LIMIT 1",
+                               (spot["location_id"],)).fetchone()
+            if nxt:
+                conn.execute("UPDATE spots SET is_default = 1 WHERE id = ?", (nxt["id"],))
         conn.commit()
     return {"ok": True}
 

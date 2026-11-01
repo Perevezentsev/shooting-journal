@@ -96,6 +96,17 @@
   .hint { font-size: 12px; color: var(--muted); }
   .legend { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+  .spot-icon { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; }
+  .spot-icon span { display: block; width: 10px; height: 10px; background: #e3b04b; border: 2px solid #fff;
+                    transform: rotate(45deg); box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
+  .spot-icon.def span { background: #f08a3c; width: 12px; height: 12px; }
+  .spot-icon .arrow { position: absolute; width: 0; height: 0; border-left: 5px solid transparent;
+                      border-right: 5px solid transparent; border-bottom: 9px solid #e3b04b;
+                      top: -9px; left: 6px; transform-origin: 5px 20px; filter: drop-shadow(0 0 1px rgba(0,0,0,.6)); }
+  .spot-sel { margin-top: 2px; font-size: 12px !important; color: var(--muted) !important; }
+  #placer label.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  #placer label.field input, #placer label.field select { border: 1px solid var(--line); background: var(--bg); padding: 6px 8px; color: var(--ink); }
+  #placer label.check { display: flex; gap: 8px; align-items: center; font-size: 13px; }
   .leaflet-popup-content { font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
   .leaflet-popup-content b { font-size: 14px; }
   .leaflet-container { font: inherit; }
@@ -200,7 +211,7 @@
 const $ = s => document.querySelector(s);
 const MONTHS = ["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
 const KIND_LABEL = { place: "место", trip: "поездка", other: "не место" };
-let days = [], locations = [];
+let days = [], locations = [], spots = [];
 let locSort = { key: "days", dir: -1 };
 
 // --- общее -------------------------------------------------------------------
@@ -259,7 +270,7 @@ function restoreFilters(ids, key) {
 }
 
 async function loadAll() {
-  [locations, days] = await Promise.all([api("/api/locations"), api("/api/days")]);
+  [locations, days, spots] = await Promise.all([api("/api/locations"), api("/api/days"), api("/api/spots")]);
   fillYears();
   $("#nav-days").textContent = days.length;
   $("#nav-locs").textContent = locations.length;
@@ -325,6 +336,7 @@ function renderDays() {
           ${q && norm(label).includes(q) ? `<div class="tag">${hl(label, q)}</div>` : ""}
           ${kinds.length ? `<div class="tag">${kinds.map(k => KIND_LABEL[k]).join(", ")}</div>` : ""}
           ${noCoords.length ? `<div class="nocoord">нет координат${d.locations.length > 1 ? ": " + esc(noCoords.join(", ")) : ""}</div>` : ""}
+          ${spotSelectHtml(d)}
           ${d.location_manual ? '<div class="tag">задано вручную</div>' : ""}
           ${q && d.source_folder && norm(d.source_folder).includes(q) ? `<div class="tag">папка: ${hl(d.source_folder, q)}</div>` : ""}</td>
       <td class="hide-sm muted">${hm(d.first_shot)}–${hm(d.last_shot)}</td>
@@ -335,6 +347,19 @@ function renderDays() {
   }
   $("#days-body").innerHTML = html || `<tr><td colspan="6" class="empty">${
     days.length ? "Ничего не найдено — попробуй ослабить фильтры." : "Пока пусто — нажми «Обновить из каталога»."}</td></tr>`;
+}
+
+// Выбор точки внутри места — только если у места дня есть точки
+function spotSelectHtml(d) {
+  if (d.locations.length !== 1) return "";
+  const own = spots.filter(s => s.location_id === d.locations[0].id);
+  if (!own.length) return "";
+  const def = own.find(s => s.is_default);
+  const explicit = d.spot && !d.spot.by_default ? d.spot.id : "";
+  return `<select class="spot-sel" title="Точка внутри места">
+    <option value="" ${explicit ? "" : "selected"}>${def ? "точка: " + esc(def.name) + " (по умолчанию)" : "точка не указана"}</option>
+    ${own.map(s => `<option value="${s.id}" ${explicit === s.id ? "selected" : ""}>точка: ${esc(s.name)}</option>`).join("")}
+  </select>`;
 }
 
 // Полный список мест подставляется в выпадающий список только при открытии
@@ -362,6 +387,11 @@ $("#days-body").addEventListener("change", async e => {
       if (v === "keep") return;
       await api(`/api/days/${id}`, { method: "PUT", body: JSON.stringify({ location_ids: v ? [+v] : [] }) });
       status("Место сохранено");
+      await loadAll();
+    } else if (e.target.classList.contains("spot-sel")) {
+      const v = e.target.value;
+      await api(`/api/days/${id}`, { method: "PUT", body: JSON.stringify({ spot_id: v ? +v : null }) });
+      status("Точка дня сохранена");
       await loadAll();
     } else if (e.target.classList.contains("notes")) {
       await api(`/api/days/${id}`, { method: "PUT", body: JSON.stringify({ notes: e.target.value }) });
@@ -417,7 +447,7 @@ function renderLocations() {
 
   $("#loc-body").innerHTML = shown.map(l => `
     <tr data-id="${l.id}">
-      <td>${hl(l.name, q)}</td>
+      <td>${hl(l.name, q)}${l.spot_count ? `<div class="tag">${l.spot_count} ${plural(l.spot_count, "точка", "точки", "точек")}</div>` : ""}</td>
       <td><input class="coords" value="${l.lat != null ? `${+l.lat.toFixed(5)}, ${+l.lon.toFixed(5)}` : ""}" placeholder="${l.kind === "place" ? "нет координат" : "—"}"></td>
       <td class="num">${l.day_count}</td>
       <td class="hide-sm muted">${dmy(l.last_date)}</td>
@@ -507,7 +537,8 @@ const LAYERS = {
     { maxZoom: 19, attribution: "Снимки © Esri, Maxar, Earthstar Geographics" }),
 };
 const KIND_COLOR = { place: "#2f7d96", trip: "#b07a3a", other: "#8e979c" };
-let map = null, markersLayer = null, candidate = null, mapFitted = false;
+let map = null, markersLayer = null, spotsLayer = null, candidate = null, mapFitted = false;
+let spotEdit = null;                     // { locId, spotId } — добавление или правка точки
 const markers = new Map();               // id места → маркер
 let placing = null;                      // { queue: [id], pos, skipped: Set, single }
 
@@ -527,7 +558,11 @@ function initMap() {
   map.on("baselayerchange", e => store.set("map-layer", e.name));
   L.control.scale({ imperial: false }).addTo(map);
   markersLayer = L.layerGroup().addTo(map);
-  map.on("click", e => { if (placing) setCandidate(e.latlng.lat, e.latlng.lng, "клик по карте"); });
+  spotsLayer = L.layerGroup().addTo(map);
+  map.on("click", e => {
+    if (placing) setCandidate(e.latlng.lat, e.latlng.lng, "клик по карте");
+    else if (spotEdit) setCandidate(e.latlng.lat, e.latlng.lng, "клик по карте");
+  });
   renderMap(true);
 }
 
@@ -552,19 +587,44 @@ function renderMap(fit = false) {
     }).bindPopup(() => popupHtml(l)).bindTooltip(esc(l.name), { direction: "top", offset: [0, -6] });
     m.addTo(markersLayer); markers.set(l.id, m);
   }
+  spotsLayer.clearLayers();
+  for (const sp of spots) spotMarker(sp).addTo(spotsLayer);
   if ((fit || !mapFitted) && placed.length) {
     mapFitted = true;
     const local = placed.filter(l => l.kind === "place");
     map.fitBounds(L.latLngBounds((local.length ? local : placed).map(l => [l.lat, l.lon])).pad(.15), { maxZoom: 11 });
   }
-  if (!placing) renderPlacerIdle();
+  if (!placing && !spotEdit) renderPlacerIdle();
+}
+
+function fitAll() {
+  const local = locations.filter(l => l.lat != null && l.kind === "place");
+  if (map && local.length) map.fitBounds(L.latLngBounds(local.map(l => [l.lat, l.lon])).pad(.15), { maxZoom: 11 });
+}
+
+const FACING = [["", "—"], [0, "С"], [45, "СВ"], [90, "В"], [135, "ЮВ"], [180, "Ю"], [225, "ЮЗ"], [270, "З"], [315, "СЗ"]];
+const facingLabel = f => f == null ? "" : (FACING.find(([d]) => d === f)?.[1] || f + "°");
+
+function spotMarker(sp) {
+  const arrow = sp.facing != null ? `<div class="arrow" style="transform:rotate(${sp.facing}deg)"></div>` : "";
+  const icon = L.divIcon({ className: "", iconSize: [22, 22], iconAnchor: [11, 11],
+    html: `<div class="spot-icon ${sp.is_default ? "def" : ""}" style="position:relative">${arrow}<span></span></div>` });
+  return L.marker([sp.lat, sp.lon], { icon })
+    .bindTooltip(esc(sp.name), { direction: "top", offset: [0, -10] })
+    .bindPopup(() => `<b>${esc(sp.name)}</b><br>
+      <span class="muted">${esc(sp.location_name)}${sp.facing != null ? " · берег смотрит на " + facingLabel(sp.facing) : ""}</span><br>
+      ${sp.is_default ? "точка по умолчанию" : `<button class="link" onclick="makeDefaultSpot(${sp.id})">сделать по умолчанию</button>`}
+      · ${sp.day_count} ${plural(sp.day_count, "день", "дня", "дней")} указано явно<br>
+      <button class="link" onclick="editSpot(${sp.location_id}, ${sp.id})">изменить</button> ·
+      <button class="link" onclick="deleteSpot(${sp.id})">удалить</button>`);
 }
 
 function popupHtml(l) {
   return `<b>${esc(l.name)}</b><br>
     ${l.day_count} ${plural(l.day_count, "выезд", "выезда", "выездов")}${l.last_date ? ", последний " + dmy(l.last_date) : ""}<br>
     <span class="muted">${l.lat.toFixed(5)}, ${l.lon.toFixed(5)} · ${KIND_LABEL[l.kind]}</span><br>
-    <button class="link" onclick="startPlacing([${l.id}])">переставить точку</button> ·
+    ${l.spot_count ? `${l.spot_count} ${plural(l.spot_count, "точка", "точки", "точек")} внутри · ` : ""}<button class="link" onclick="editSpot(${l.id})">добавить точку</button><br>
+    <button class="link" onclick="startPlacing([${l.id}])">переставить место</button> ·
     <a target="_blank" href="https://yandex.ru/maps/?pt=${l.lon},${l.lat}&z=14&l=map">Яндекс.Карты</a>`;
 }
 
@@ -601,13 +661,16 @@ function startPlacing(ids) {
   initMap();
   if (!map) return;
   const single = !!ids;
+  spotEdit = null;
   placing = { queue: ids || placeQueue(), pos: 0, skipped: new Set(), single };
   showPlace();
 }
 
 function stopPlacing() {
+  const single = placing?.single;
   placing = null; clearCandidate();
   renderMap();
+  if (!single) fitAll();
 }
 
 function currentPlace() {
@@ -680,7 +743,11 @@ async function geocode(q, auto) {
 function setCandidate(lat, lon, source, fly = true) {
   clearCandidate();
   candidate = L.marker([lat, lon], { draggable: true, autoPan: true }).addTo(map);
-  candidate.on("dragend", () => { if (!$("#pl-save")) return; $("#pl-save").disabled = false; });
+  candidate.on("dragend", () => {
+    if ($("#pl-save")) $("#pl-save").disabled = false;
+    if ($("#sp-save")) $("#sp-save").disabled = false;
+  });
+  if ($("#sp-save")) $("#sp-save").disabled = false;
   if (fly) map.flyTo([lat, lon], Math.max(map.getZoom(), 12), { duration: .6 });
   else map.setView([lat, lon], Math.max(map.getZoom(), 12));
   const btn = $("#pl-save");
@@ -717,6 +784,85 @@ function nextPlace() {
   if (placing.single) { stopPlacing(); return; }
   placing.pos += 1;
   showPlace();
+}
+
+
+// --- точки внутри мест ---
+function editSpot(locId, spotId = null) {
+  initMap();
+  if (!map) return;
+  if (placing) { placing = null; }
+  map.closePopup();
+  const l = locations.find(x => x.id === locId);
+  const sp = spotId ? spots.find(x => x.id === spotId) : null;
+  spotEdit = { locId, spotId };
+  clearCandidate();
+  const firstSpot = !spots.some(x => x.location_id === locId);
+  $("#placer").innerHTML = `
+    <div class="row" style="justify-content:space-between">
+      <h2>${sp ? "Точка" : "Новая точка"}</h2>
+      <button class="link" id="sp-cancel">отмена</button>
+    </div>
+    <div class="hint">Место: <b>${esc(l.name)}</b></div>
+    <label class="field">Название
+      <input id="sp-name" value="${esc(sp ? sp.name : "")}" placeholder="например, западная сторона мыса">
+    </label>
+    <label class="field">Берег смотрит на (в сторону воды)
+      <select id="sp-facing">${FACING.map(([d, t]) => `<option value="${d}" ${(sp ? sp.facing : null) === (d === "" ? null : d) ? "selected" : ""}>${t}</option>`).join("")}</select>
+    </label>
+    <label class="check"><input type="checkbox" id="sp-def" ${sp ? (sp.is_default ? "checked" : "") : (firstSpot ? "checked" : "")}>
+      точка по умолчанию для этого места</label>
+    <div class="hint">${sp ? "Перетащи маркер, если нужно сдвинуть точку." : "Кликни по карте, где эта точка. Маркер можно перетащить."}
+      Направление берега нужно, чтобы журнал понимал, ветер «в лицо» или «в спину».</div>
+    <div class="row">
+      <button class="btn" id="sp-save" disabled>Сохранить</button>
+    </div>`;
+  $("#sp-cancel").addEventListener("click", stopSpotEdit);
+  $("#sp-save").addEventListener("click", saveSpot);
+  if (sp) { setCandidate(sp.lat, sp.lon, "текущая точка", false); $("#sp-save").disabled = false; }
+  else if (l.lat != null) map.setView([l.lat, l.lon], Math.max(map.getZoom(), 13));
+  $("#sp-name").focus();
+}
+
+function stopSpotEdit() {
+  spotEdit = null; clearCandidate();
+  renderMap();
+}
+
+async function saveSpot() {
+  if (!spotEdit) return;
+  const name = $("#sp-name").value.trim();
+  if (!name) { status("Ошибка: нужно название точки", 4000); $("#sp-name").focus(); return; }
+  if (!candidate) { status("Ошибка: кликни по карте, где точка", 4000); return; }
+  const { lat, lng } = candidate.getLatLng();
+  const fv = $("#sp-facing").value;
+  const body = { name, coords: `${lat.toFixed(6)}, ${lng.toFixed(6)}`,
+                 facing: fv === "" ? null : +fv, is_default: $("#sp-def").checked };
+  try {
+    if (spotEdit.spotId) await api(`/api/spots/${spotEdit.spotId}`, { method: "PUT", body: JSON.stringify(body) });
+    else await api(`/api/locations/${spotEdit.locId}/spots`, { method: "POST", body: JSON.stringify(body) });
+    status(`Точка «${name}» сохранена`);
+    spotEdit = null; clearCandidate();
+    await loadAll();
+  } catch (err) { status("Ошибка: " + err.message, 6000); }
+}
+
+async function makeDefaultSpot(id) {
+  try {
+    await api(`/api/spots/${id}`, { method: "PUT", body: JSON.stringify({ is_default: true }) });
+    map.closePopup(); status("Точка по умолчанию изменена");
+    await loadAll();
+  } catch (err) { status("Ошибка: " + err.message, 6000); }
+}
+
+async function deleteSpot(id) {
+  const sp = spots.find(x => x.id === id);
+  if (!confirm(`Удалить точку «${sp.name}»?\n\nДни, где она указана явно, вернутся к точке по умолчанию.`)) return;
+  try {
+    await api(`/api/spots/${id}`, { method: "DELETE" });
+    map.closePopup(); status("Точка удалена");
+    await loadAll();
+  } catch (err) { status("Ошибка: " + err.message, 6000); }
 }
 
 // Enter в режиме расстановки — сохранить (если фокус не в поле поиска)

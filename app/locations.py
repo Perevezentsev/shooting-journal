@@ -59,6 +59,11 @@ def resolve(conn: sqlite3.Connection, name: str) -> list[int]:
 def set_day_locations(conn: sqlite3.Connection, day_id: int, loc_ids: list[int]) -> None:
     conn.execute("DELETE FROM day_locations WHERE day_id = ?", (day_id,))
     conn.executemany("INSERT OR IGNORE INTO day_locations VALUES (?, ?)", [(day_id, i) for i in loc_ids])
+    # Точка дня должна принадлежать одному из его мест, иначе сбрасываем
+    conn.execute("""UPDATE days SET spot_id = NULL WHERE id = ? AND spot_id IS NOT NULL
+                    AND spot_id NOT IN (SELECT s.id FROM spots s
+                                        JOIN day_locations dl ON dl.location_id = s.location_id
+                                        WHERE dl.day_id = ?)""", (day_id, day_id))
 
 
 def _replace_location(conn: sqlite3.Connection, src_id: int, dst_ids: list[int]) -> None:
@@ -75,6 +80,12 @@ def _replace_location(conn: sqlite3.Connection, src_id: int, dst_ids: list[int])
         dst = conn.execute("SELECT * FROM locations WHERE id = ?", (dst_ids[0],)).fetchone()
         if dst["lat"] is None and src["lat"] is not None:
             conn.execute("UPDATE locations SET lat = ?, lon = ? WHERE id = ?", (src["lat"], src["lon"], dst["id"]))
+    if dst_ids:
+        # Точки переезжают к первому из новых мест; «по умолчанию» остаётся одна
+        dst = dst_ids[0]
+        if conn.execute("SELECT 1 FROM spots WHERE location_id = ? AND is_default = 1", (dst,)).fetchone():
+            conn.execute("UPDATE spots SET is_default = 0 WHERE location_id = ?", (src_id,))
+        conn.execute("UPDATE spots SET location_id = ? WHERE location_id = ?", (dst, src_id))
     conn.execute("DELETE FROM locations WHERE id = ?", (src_id,))
 
 
