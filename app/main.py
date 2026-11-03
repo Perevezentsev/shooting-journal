@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from . import db
 from .locations import KINDS, merge_locations, set_day_locations
 from .sync import sync_catalog
-from . import weather
+from . import plan, weather
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
@@ -323,6 +323,30 @@ def api_weather_status():
         with db.connect() as conn:
             st["pending"] = len(weather.plan(conn))
     return st
+
+
+# --- Планирование выходных ----------------------------------------------------
+
+@app.get("/api/plan")
+def api_plan(dates: str | None = None, all: bool = False, refresh: bool = False):  # noqa: A002
+    from datetime import date as _date, timedelta as _td
+    today = _date.today()
+    if dates:
+        try:
+            ds = sorted({_date.fromisoformat(x) for x in dates.split(",") if x})
+        except ValueError:
+            raise HTTPException(400, "Даты в формате ГГГГ-ММ-ДД через запятую")
+    else:
+        ds = plan.default_dates(today)
+    if not ds or any(d < today or d > today + _td(days=plan.MAX_AHEAD) for d in ds):
+        raise HTTPException(400, f"Можно планировать на сегодня и до {plan.MAX_AHEAD} дней вперёд")
+    with db.connect() as conn:
+        try:
+            return plan.build(conn, ds[:3], all_places=all, force=refresh)
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"Прогноз недоступен: {e}")
+        except RuntimeError as e:
+            raise HTTPException(502, str(e))
 
 
 # --- Поиск мест на карте (геокодер OpenStreetMap Nominatim) ------------------

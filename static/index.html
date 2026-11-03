@@ -66,9 +66,9 @@
   .nocoord { color: var(--warn); font-size: 12px; }
   .tag { font-size: 12px; color: var(--muted); }
   td.wx { font-size: 13px; line-height: 1.35; min-width: 170px; }
-  td.wx .t { font-weight: 600; }
-  td.wx .sub { color: var(--muted); font-size: 12px; }
-  td.wx .shore { color: var(--warm); font-size: 12px; }
+  td.wx .t, .pcard .t { font-weight: 600; }
+  td.wx .sub, .pcard .sub { color: var(--muted); font-size: 12px; }
+  td.wx .shore, .pcard .shore { color: var(--warm); font-size: 12px; }
   .muted { color: var(--muted); }
   a { color: var(--accent); }
   mark { background: color-mix(in srgb, var(--warm) 35%, transparent); color: inherit; border-radius: 2px; }
@@ -76,6 +76,35 @@
   .add input { border: 1px solid var(--line); background: var(--panel); padding: 6px 10px; width: 100%; }
   .empty { padding: 24px; text-align: center; color: var(--muted); }
   .hidden { display: none; }
+
+  /* --- Выходные --- */
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips button { background: var(--panel); border: 1px solid var(--line); color: var(--ink); border-radius: 16px;
+                  padding: 4px 10px; font: inherit; font-size: 13px; cursor: pointer; }
+  .chips button.on { background: var(--accent); border-color: var(--accent); color: var(--panel); }
+  .chips button.we:not(.on) { border-color: var(--warm); }
+  .pcard { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+  .pcard h3 { margin: 0; font-size: 15px; font-weight: 600; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+  .pcard h3 .tag { font-weight: 400; }
+  .pcard .hist { font-size: 13px; color: var(--muted); margin: 4px 0 10px; }
+  .pcard .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+  .pcard .col { border-top: 1px solid var(--line); padding-top: 8px; font-size: 13px; line-height: 1.4; }
+  .pcard .col .dname { font-size: 12px; color: var(--warm); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 2px; }
+  .pcard .like { margin-top: 6px; padding: 6px 8px; border-radius: 6px; background: var(--bg); font-size: 12px; }
+  .pcard .like b { color: var(--ink); }
+  .pcard .flag { color: var(--warn); font-size: 12px; }
+  .pcard .note { font-size: 12px; color: var(--muted); font-style: italic; }
+  .pcard .why { font-size: 12px; color: var(--accent); margin-top: 2px; }
+  .locchip { display: inline-flex; gap: 6px; align-items: center; background: var(--accent); color: var(--panel);
+             border-radius: 14px; padding: 3px 10px; font-size: 13px; }
+  .locchip.hidden { display: none; }
+  .locchip button { background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 0; font-weight: 600; }
+  .daylink { background: none; border: 0; padding: 0; font: inherit; color: var(--accent); cursor: pointer;
+             text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; }
+  #days-body tr.flash td { animation: flash 2.4s ease-out; }
+  @keyframes flash { 0%, 30% { background: color-mix(in srgb, var(--warm) 30%, transparent); } 100% { background: transparent; } }
+  .simbar { display: inline-block; width: 60px; height: 6px; background: var(--line); border-radius: 3px; vertical-align: middle; margin-left: 6px; overflow: hidden; }
+  .simbar i { display: block; height: 100%; background: var(--accent); }
 
   /* --- Карта --- */
   main.wide { max-width: none; padding: 0; }
@@ -112,6 +141,7 @@
                        border-bottom: 18px solid #f08a3c; filter: drop-shadow(0 0 2px rgba(0,0,0,.8)); }
   .facing-handle.unset div { border-bottom-color: #8e979c; }
   #sp-facing-val { font-weight: 600; color: var(--ink); }
+  .sunlbl { font-size: 11px; font-weight: 600; color: #fff; background: rgba(0,0,0,.55); padding: 1px 5px; border-radius: 3px; white-space: nowrap; }
   .spot-sel { margin-top: 2px; font-size: 12px !important; color: var(--muted) !important; }
   #placer label.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
   #placer label.field input, #placer label.field select { border: 1px solid var(--line); background: var(--bg); padding: 6px 8px; color: var(--ink); }
@@ -139,6 +169,7 @@
     <button data-tab="days" class="active">Дни<span class="count" id="nav-days"></span></button>
     <button data-tab="locations">Места<span class="count" id="nav-locs"></span></button>
     <button data-tab="map">Карта<span class="count" id="nav-map"></span></button>
+    <button data-tab="plan">Выходные</button>
   </nav>
   <div class="spacer"></div>
   <span id="status"></span>
@@ -162,6 +193,7 @@
       <label><input type="checkbox" id="d-nocoord"> без координат</label>
       <label><input type="checkbox" id="d-notes"> с заметками</label>
       <button class="link" id="d-reset">сбросить</button>
+      <span class="locchip hidden" id="d-locchip"></span>
       <span class="spacer"></span>
       <button class="btn ghost small" id="wx-fetch" title="Архив Open-Meteo: погода по месту или точке каждого дня">Загрузить погоду</button>
     </div>
@@ -211,6 +243,18 @@
     </form>
     <div class="summary" style="margin-top:10px">Координаты удобнее ставить на вкладке «Карта» — режим «Расставить координаты». Можно и вписать вручную: «59.93, 30.31».</div>
   </section>
+  <!-- ВЫХОДНЫЕ -->
+  <section id="tab-plan" class="hidden">
+    <div class="toolbar">
+      <div class="chips" id="plan-dates"></div>
+      <label><input type="checkbox" id="plan-all"> все места</label>
+      <button class="link" id="plan-refresh">обновить прогноз</button>
+    </div>
+    <div class="summary" id="plan-summary"></div>
+    <div id="plan-list"></div>
+    <div class="summary" style="margin-top:10px">Места — где ты бывал в эти недели прошлых лет (±2 недели). Порядок: сколько раз и с каким отбором ты снимал здесь в эти недели, плюс похожесть прогноза на твои удачные дни (на дни из другого сезона — вполовину). «Похоже на» — твой удачный день на этом месте с самой похожей погодой: направление и сила ветра, облачность, дождь, ветер у берега. Прогноз: <a href="https://open-meteo.com/" target="_blank">Open-Meteo.com</a> (CC BY 4.0).</div>
+  </section>
+
   <!-- КАРТА -->
   <section id="tab-map" class="hidden">
     <div class="map-wrap">
@@ -225,6 +269,7 @@ const $ = s => document.querySelector(s);
 const MONTHS = ["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
 const KIND_LABEL = { place: "место", trip: "поездка", other: "не место" };
 let days = [], locations = [], spots = [];
+let dayLoc = null;                       // фильтр дней по месту или точке: { type, id, name }
 let locSort = { key: "days", dir: -1 };
 
 // --- общее -------------------------------------------------------------------
@@ -302,6 +347,8 @@ function fillYears() {
 }
 
 function dayMatches(d, f) {
+  if (dayLoc && dayLoc.type === "place" && !d.locations.some(l => l.id === dayLoc.id)) return false;
+  if (dayLoc && dayLoc.type === "spot" && !(d.spot && d.spot.id === dayLoc.id)) return false;
   if (f["d-year"] && !d.date.startsWith(f["d-year"])) return false;
   if (f["d-kind"] && !d.locations.some(l => l.kind === f["d-kind"])) return false;
   if (f["d-noloc"] && d.locations.length) return false;
@@ -315,7 +362,26 @@ function dayMatches(d, f) {
   return true;
 }
 
+function renderLocChip() {
+  const c = $("#d-locchip");
+  c.classList.toggle("hidden", !dayLoc);
+  c.innerHTML = dayLoc ? `${dayLoc.type === "spot" ? "точка" : "место"}: ${esc(dayLoc.name)} <button title="Снять фильтр" id="d-locclear">×</button>` : "";
+  $("#d-locclear")?.addEventListener("click", () => { dayLoc = null; renderDays(); });
+}
+
+// Из карты — в журнал: дни этого места или точки
+function openPlaceDays(type, id) {
+  const name = type === "spot" ? spots.find(x => x.id === id)?.name : locations.find(x => x.id === id)?.name;
+  for (const fid of FILTERS.days) { const el = $("#" + fid); el.type === "checkbox" ? el.checked = false : el.value = ""; }
+  dayLoc = { type, id, name };
+  map?.closePopup();
+  showTab("days");
+  renderDays();
+  window.scrollTo({ top: 0 });
+}
+
 function renderDays() {
+  renderLocChip();
   const f = readFilters(FILTERS.days);
   store.set("days-filters", f);
   const q = norm(f["d-q"].trim());
@@ -373,13 +439,18 @@ function weatherHtml(w) {
   const prec = [w.precip >= 0.2 ? `осадки ${fmt(w.precip, 1)} мм` : "", w.snowfall >= 0.2 ? `снег ${fmt(w.snowfall, 1)} см` : ""].filter(Boolean).join(", ");
   const wind = w.wind == null ? "" : `ветер ${w.wind_from_txt} ${fmt(w.wind)} м/с${w.gust != null && w.gust - w.wind >= 3 ? `, порывы ${fmt(w.gust)}` : ""}`;
   const a = w.after_sunrise_min;
-  const sun = w.sunrise ? `восход ${w.sunrise}${a == null ? "" : a >= 0 ? ` · старт через ${dur(a)}` : ` · старт за ${dur(-a)} до восхода`}` : "";
+  const az = (deg, txt) => deg == null ? "" : ` ${txt} ${deg}°`;
+  const sun = w.sunrise ? `восход ${w.sunrise}${az(w.sunrise_az, w.sunrise_az_txt)}${a == null ? "" : a >= 0 ? ` · старт через ${dur(a)}` : ` · старт за ${dur(-a)} до восхода`}` : "";
+  const sunset = w.sunset && w.sunset_az != null ? `закат ${w.sunset}${az(w.sunset_az, w.sunset_az_txt)}` : "";
+  const light = w.light ? `${w.light}${w.sun_mid_elev > 0 ? ` (в ${w.sun_mid_time} солнце на ${w.sun_mid_az_txt}, ${w.sun_mid_elev}° над горизонтом)` : ""}` : "";
   const w3 = w.wind3d != null ? `3 дня: ${w.wind3d_from_txt} ${fmt(w.wind3d)} м/с` : "";
   const shore = [w.shore_wind ? "ветер " + w.shore_wind : "", w.water || ""].filter(Boolean).join("; ");
   return `<div><span class="t">${t}</span> ${esc(w.sky || "")}${w.cloud != null ? ` · ${fmt(w.cloud)}%` : ""}</div>
     ${wind ? `<div class="sub">${esc(wind)}</div>` : ""}
     ${prec ? `<div class="sub">${esc(prec)}</div>` : ""}
     ${sun ? `<div class="sub">${esc(sun)}</div>` : ""}
+    ${sunset ? `<div class="sub">${esc(sunset)}</div>` : ""}
+    ${light ? `<div class="shore">${esc(light)}</div>` : ""}
     ${w3 ? `<div class="sub">${esc(w3)}</div>` : ""}
     ${shore ? `<div class="shore">${esc(shore)}</div>` : ""}`;
 }
@@ -593,6 +664,7 @@ const LAYERS = {
 };
 const KIND_COLOR = { place: "#2f7d96", trip: "#b07a3a", other: "#8e979c" };
 let map = null, markersLayer = null, spotsLayer = null, candidate = null, mapFitted = false;
+let mergeFrom = null;                    // id места, которое объединяем на карте
 let spotEdit = null;                     // { locId, spotId, facing } — добавление или правка точки
 let facingHandle = null, facingLine = null;
 const HANDLE_PX = 80;                    // длина стрелки направления на экране
@@ -645,6 +717,7 @@ function renderMap(fit = false) {
     }).bindPopup(() => popupHtml(l)).bindTooltip(esc(l.name), { direction: "top", offset: [0, -6] });
     // В режиме расстановки клик по кружку места — тоже клик по карте
     m.on("click", e => {
+      if (mergeFrom) { m.closePopup(); if (l.id !== mergeFrom) chooseMergeName(mergeFrom, l.id); return; }
       if (!placing && !spotEdit) return;
       m.closePopup();
       setCandidate(e.latlng.lat, e.latlng.lng, "клик по карте", false);
@@ -658,7 +731,7 @@ function renderMap(fit = false) {
     const local = placed.filter(l => l.kind === "place");
     map.fitBounds(L.latLngBounds((local.length ? local : placed).map(l => [l.lat, l.lon])).pad(.15), { maxZoom: 11 });
   }
-  if (!placing && !spotEdit) renderPlacerIdle();
+  if (!placing && !spotEdit && !mergeFrom) renderPlacerIdle();
 }
 
 function fitAll() {
@@ -679,17 +752,22 @@ function spotMarker(sp) {
       <span class="muted">${esc(sp.location_name)}${sp.facing != null ? " · берег смотрит на " + facingLabel(sp.facing) : ""}</span><br>
       ${sp.is_default ? "точка по умолчанию" : `<button class="link" onclick="makeDefaultSpot(${sp.id})">сделать по умолчанию</button>`}
       · ${sp.day_count} ${plural(sp.day_count, "день", "дня", "дней")} указано явно<br>
+      <button class="link" onclick="openPlaceDays('spot', ${sp.id})">дни в журнале</button> ·
       <button class="link" onclick="editSpot(${sp.location_id}, ${sp.id})">изменить</button> ·
-      <button class="link" onclick="deleteSpot(${sp.id})">удалить</button>`);
+      <button class="link" onclick="deleteSpot(${sp.id})">удалить</button> ·
+      <button class="link" onclick="showSun(${sp.lat}, ${sp.lon})">солнце сегодня</button>`);
 }
 
 function popupHtml(l) {
   return `<b>${esc(l.name)}</b><br>
     ${l.day_count} ${plural(l.day_count, "выезд", "выезда", "выездов")}${l.last_date ? ", последний " + dmy(l.last_date) : ""}<br>
     <span class="muted">${l.lat.toFixed(5)}, ${l.lon.toFixed(5)} · ${KIND_LABEL[l.kind]}</span><br>
+    <button class="link" onclick="openPlaceDays('place', ${l.id})">дни в журнале</button><br>
     ${l.spot_count ? `${l.spot_count} ${plural(l.spot_count, "точка", "точки", "точек")} внутри · ` : ""}<button class="link" onclick="editSpot(${l.id})">добавить точку</button><br>
     <button class="link" onclick="startPlacing([${l.id}])">переставить место</button> ·
-    <a target="_blank" href="https://yandex.ru/maps/?pt=${l.lon},${l.lat}&z=14&l=map">Яндекс.Карты</a>`;
+    <button class="link" onclick="startMerge(${l.id})">объединить с…</button> ·
+    <a target="_blank" href="https://yandex.ru/maps/?pt=${l.lon},${l.lat}&z=14&l=map">Яндекс.Карты</a> ·
+    <button class="link" onclick="showSun(${l.lat}, ${l.lon})">солнце сегодня</button>`;
 }
 
 function focusPlace(id) {
@@ -919,6 +997,100 @@ function nextPlace() {
 }
 
 
+
+// --- лучи восхода и заката на карте (та же формула, что на сервере) ---
+let sunLayer = null;
+function sunRiseSetAz(lat, date) {
+  const n = Math.floor((date - new Date(date.getFullYear(), 0, 0)) / 864e5);
+  const g = 2 * Math.PI / 365 * (n - 1);
+  const decl = 0.006918 - 0.399912 * Math.cos(g) + 0.070257 * Math.sin(g) - 0.006758 * Math.cos(2 * g)
+    + 0.000907 * Math.sin(2 * g) - 0.002697 * Math.cos(3 * g) + 0.00148 * Math.sin(3 * g);
+  const phi = lat * Math.PI / 180, h0 = -0.833 * Math.PI / 180;
+  const c = (Math.sin(h0) - Math.sin(phi) * Math.sin(decl)) / (Math.cos(phi) * Math.cos(decl));
+  if (c < -1 || c > 1) return null;
+  const ha = Math.acos(c);
+  const az = h => ((Math.atan2(Math.sin(h), Math.cos(h) * Math.sin(phi) - Math.tan(decl) * Math.cos(phi)) * 180 / Math.PI + 180) % 360);
+  return [az(-ha), az(ha)];
+}
+function rayEnd(lat, lon, az, m) {
+  const a = az * Math.PI / 180;
+  return [lat + m * Math.cos(a) / 111320, lon + m * Math.sin(a) / (111320 * Math.cos(lat * Math.PI / 180))];
+}
+function showSun(lat, lon) {
+  if (sunLayer) { sunLayer.remove(); sunLayer = null; }
+  const r = sunRiseSetAz(lat, new Date());
+  if (!r) return;
+  const len = 40075016 * Math.cos(lat * Math.PI / 180) / Math.pow(2, map.getZoom() + 8) * 160;   // ~160 px на экране
+  sunLayer = L.layerGroup([
+    L.polyline([[lat, lon], rayEnd(lat, lon, r[0], len)], { color: "#f5c242", weight: 3, interactive: false }),
+    L.polyline([[lat, lon], rayEnd(lat, lon, r[1], len)], { color: "#e0643c", weight: 3, interactive: false }),
+    L.marker(rayEnd(lat, lon, r[0], len), { interactive: false, icon: L.divIcon({ className: "", iconSize: [80, 16], iconAnchor: [-4, 8],
+      html: `<span class="sunlbl">восход ${Math.round(r[0])}°</span>` }) }),
+    L.marker(rayEnd(lat, lon, r[1], len), { interactive: false, icon: L.divIcon({ className: "", iconSize: [80, 16], iconAnchor: [-4, 8],
+      html: `<span class="sunlbl">закат ${Math.round(r[1])}°</span>` }) }),
+  ]).addTo(map);
+  status("Лучи — направления восхода и заката сегодня", 4000);
+}
+
+
+// --- объединение мест на карте ---
+function distKm(a, b) {
+  const r = Math.PI / 180, x = (b.lon - a.lon) * r * Math.cos((a.lat + b.lat) / 2 * r), y = (b.lat - a.lat) * r;
+  return Math.sqrt(x * x + y * y) * 6371;
+}
+
+function startMerge(id) {
+  initMap();
+  map.closePopup();
+  placing = null; spotEdit = null; clearCandidate();
+  mergeFrom = id;
+  const src = locations.find(l => l.id === id);
+  const near = locations.filter(l => l.id !== id && l.lat != null)
+    .map(l => ({ l, d: distKm(src, l) })).filter(x => x.d <= 5).sort((a, b) => a.d - b.d);
+  $("#placer").innerHTML = `
+    <div class="row" style="justify-content:space-between">
+      <h2>Объединить место</h2><button class="link" id="mg-cancel">отмена</button>
+    </div>
+    <div><div class="place-name">${esc(src.name)}</div>
+      <div class="hint">${src.day_count} ${plural(src.day_count, "выезд", "выезда", "выездов")}</div></div>
+    <div class="hint">Кликни на карте по месту, с которым объединить, или выбери из ближайших:</div>
+    <div class="results">${near.length ? near.map(({ l, d }) => `
+      <button type="button" data-id="${l.id}">${esc(l.name)}
+        <small>${d < 1 ? Math.round(d * 1000) + " м" : d.toFixed(1) + " км"} · ${l.day_count} ${plural(l.day_count, "выезд", "выезда", "выездов")}</small></button>`).join("")
+      : `<div class="hint">В радиусе 5 км других мест нет.</div>`}</div>`;
+  $("#mg-cancel").addEventListener("click", stopMerge);
+  document.querySelectorAll("#placer .results button[data-id]").forEach(b =>
+    b.addEventListener("click", () => chooseMergeName(id, +b.dataset.id)));
+  if (src.lat != null) map.setView([src.lat, src.lon], Math.max(map.getZoom(), 12));
+}
+
+function stopMerge() { mergeFrom = null; renderMap(); }
+
+function chooseMergeName(aId, bId) {
+  const a = locations.find(l => l.id === aId), b = locations.find(l => l.id === bId);
+  $("#placer").innerHTML = `
+    <div class="row" style="justify-content:space-between">
+      <h2>Какое название оставить?</h2><button class="link" id="mg-cancel">отмена</button>
+    </div>
+    <div class="hint">Дни, синонимы и точки внутри перейдут к оставшемуся месту. Папки со вторым названием при следующих синхронизациях будут попадать туда же. Координаты останутся у оставшегося места.</div>
+    <div class="results">
+      ${[a, b].map(x => `<button type="button" data-keep="${x.id}">оставить «${esc(x.name)}»
+        <small>${x.day_count} ${plural(x.day_count, "выезд", "выезда", "выездов")}${x.spot_count ? ` · ${x.spot_count} ${plural(x.spot_count, "точка", "точки", "точек")}` : ""}</small></button>`).join("")}
+    </div>`;
+  $("#mg-cancel").addEventListener("click", stopMerge);
+  document.querySelectorAll("#placer [data-keep]").forEach(btn => btn.addEventListener("click", async () => {
+    const keep = +btn.dataset.keep, drop = keep === aId ? bId : aId;
+    const k = locations.find(l => l.id === keep), d = locations.find(l => l.id === drop);
+    try {
+      await api(`/api/locations/${drop}/merge`, { method: "POST", body: JSON.stringify({ into: keep }) });
+      status(`«${d.name}» объединено с «${k.name}»`);
+      mergeFrom = null;
+      await loadAll();
+      focusPlace(keep);
+    } catch (err) { status("Ошибка: " + err.message, 6000); }
+  }));
+}
+
 // --- точки внутри мест ---
 function editSpot(locId, spotId = null) {
   initMap();
@@ -1012,10 +1184,124 @@ document.addEventListener("keydown", e => {
   if (b && !b.disabled) { e.preventDefault(); saveCandidate(); }
 });
 
+
+// --- ВЫХОДНЫЕ ----------------------------------------------------------------
+const WD = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+const WD_FULL = ["воскресенье", "понедельник", "вторник", "среда", "четверг", "пятница", "суббота"];
+let planDates = null, planLoaded = false;
+const isoLocal = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+function defaultPlanDates() {
+  const t = new Date(); t.setHours(12, 0, 0, 0);
+  const wd = t.getDay();
+  const add = n => { const d = new Date(t); d.setDate(d.getDate() + n); return isoLocal(d); };
+  if (wd === 0) return [add(0), add(6)];
+  const toSat = (6 - wd + 7) % 7;
+  return [add(toSat), add(toSat + 1)];
+}
+
+function renderPlanChips() {
+  const t = new Date(); t.setHours(12, 0, 0, 0);
+  let html = "";
+  for (let i = 0; i <= 10; i++) {
+    const d = new Date(t); d.setDate(d.getDate() + i);
+    const iso = isoLocal(d), wd = d.getDay();
+    html += `<button data-d="${iso}" class="${planDates.includes(iso) ? "on" : ""} ${wd === 0 || wd === 6 ? "we" : ""}">
+      ${i === 0 ? "сегодня" : i === 1 ? "завтра" : WD[wd]} ${d.getDate()}.${String(d.getMonth() + 1).padStart(2, "0")}</button>`;
+  }
+  $("#plan-dates").innerHTML = html;
+}
+
+$("#plan-dates").addEventListener("click", e => {
+  const b = e.target.closest("button[data-d]");
+  if (!b) return;
+  const d = b.dataset.d;
+  if (planDates.includes(d)) { if (planDates.length > 1) planDates = planDates.filter(x => x !== d); }
+  else planDates = [...planDates, d].sort().slice(-3);
+  loadPlan();
+});
+$("#plan-all").addEventListener("change", () => loadPlan());
+$("#plan-refresh").addEventListener("click", () => loadPlan(true));
+
+async function loadPlan(refresh = false) {
+  planDates = planDates || defaultPlanDates();
+  renderPlanChips();
+  planLoaded = true;
+  $("#plan-summary").textContent = "Загружаю прогноз…";
+  $("#plan-list").innerHTML = "";
+  try {
+    const q = new URLSearchParams({ dates: planDates.join(","), all: $("#plan-all").checked, refresh });
+    const r = await api("/api/plan?" + q);
+    renderPlan(r);
+  } catch (err) {
+    $("#plan-summary").textContent = "";
+    status("Ошибка: " + err.message, 6000);
+  }
+}
+
+function planDayHtml(iso, v) {
+  const d = new Date(iso + "T12:00");
+  const head = `<div class="dname">${WD_FULL[d.getDay()]}, ${d.getDate()}.${String(d.getMonth() + 1).padStart(2, "0")}</div>`;
+  const f = v.forecast;
+  if (!f) return `<div class="col">${head}<div class="sub muted">прогноза пока нет</div></div>`;
+  const like = v.like;
+  return `<div class="col">${head}
+    <div class="sub muted">окно ${f.window}</div>
+    ${f.window_note ? `<div class="flag">${esc(f.window_note)}</div>` : ""}
+    ${weatherHtml(f)}
+    ${f.flags.map(x => `<div class="flag">${esc(x)}</div>`).join("")}
+    ${like ? `<div class="like" title="Удачный день на этом месте в пределах ±1,5 месяца с самой похожей погодой: ветер, облачность, дождь, ветер у берега">похоже на <b>${dayLink(like.day_id, like.date)}</b>
+        <span class="simbar" title="похожесть ${like.similarity}%"><i style="width:${like.similarity}%"></i></span> ${like.similarity}%<br>
+        <span class="muted">тогда: ${esc(like.sky || "")}${like.wind != null ? `, ${like.wind_from_txt} ${fmt(like.wind)} м/с` : ""}${like.water ? ", " + esc(like.water) : ""} — отобрано <b>${like.selected}</b> из ${like.photos}</span>
+        ${like.same_season ? "" : `<div class="muted">в этот сезон удачных дней мало — сравнение по всему году</div>`}</div>`
+      : `<div class="like muted">мало дней с погодой на этом месте, чтобы сравнить</div>`}
+    ${like ? `<div class="sub" style="margin-top:3px">удачный день в пределах ±1,5 мес. с самой похожей погодой</div>` : ""}
+  </div>`;
+}
+
+// Ссылка на день журнала: вкладка «Дни», прокрутка и подсветка
+const dayLink = (id, iso) => `<button class="daylink" onclick="openDay(${id})">${dmy(iso)}</button>`;
+
+function openDay(id) {
+  const d = days.find(x => x.id === id);
+  if (!d) return;
+  showTab("days");
+  // если день скрыт фильтрами — сбрасываем их
+  if (!dayMatches(d, readFilters(FILTERS.days))) {
+    for (const fid of FILTERS.days) { const el = $("#" + fid); el.type === "checkbox" ? el.checked = false : el.value = ""; }
+    renderDays();
+  }
+  const tr = document.querySelector(`#days-body tr[data-id="${id}"]`);
+  if (!tr) return;
+  tr.scrollIntoView({ block: "center", behavior: "smooth" });
+  tr.classList.remove("flash"); void tr.offsetWidth; tr.classList.add("flash");
+}
+
+function renderPlan(r) {
+  const n = r.places.length;
+  $("#plan-summary").innerHTML = n
+    ? `<b>${n}</b> ${plural(n, "место", "места", "мест")} · сначала те, где ты чаще и удачнее снимал в эти недели и прогноз похож на твои удачные дни`
+    : ($("#plan-all").checked ? "Нет мест с координатами и выездами." : "В эти недели прошлых лет ты нигде не снимал — включи «все места».");
+  $("#plan-list").innerHTML = r.places.map(p => `
+    <div class="pcard">
+      <h3>${esc(p.name)}${p.spot ? `<span class="tag">точка: ${esc(p.spot)}</span>` : ""}
+        <button class="link tag" onclick="showTab('map'); focusPlace(${p.id})">на карте</button></h3>
+      <div class="hist">${p.season_visits
+        ? `в эти недели (±2 нед.) — ${p.season_visits} ${plural(p.season_visits, "выезд", "выезда", "выездов")}: ${
+            p.season_list.slice(0, 6).map(x => dayLink(x.day_id, x.date)).join(", ")}${p.season_list.length > 6 ? "…" : ""}${
+            p.season_rate != null ? ` · отбор ${p.season_rate}%` : ""}`
+        : "в эти недели не был"} · всего выездов: ${p.total_visits}
+        ${p.why.length ? `<div class="why">почему здесь: ${esc(p.why.join("; "))}</div>` : ""}
+        ${p.notes.map(x => `<div class="note">${dayLink(x.day_id, x.date)}: ${esc(x.text)}</div>`).join("")}</div>
+      <div class="cols">${r.dates.map(d => planDayHtml(d, p.per_date[d])).join("")}</div>
+    </div>`).join("");
+}
+
 // --- фильтры, вкладки, синхронизация ----------------------------------------
 for (const id of FILTERS.days) $("#" + id).addEventListener("input", renderDays);
 for (const id of FILTERS.locs) $("#" + id).addEventListener("input", renderLocations);
 $("#d-reset").addEventListener("click", () => {
+  dayLoc = null;
   for (const id of FILTERS.days) { const el = $("#" + id); el.type === "checkbox" ? el.checked = false : el.value = ""; }
   renderDays();
 });
@@ -1038,7 +1324,8 @@ $("#status").addEventListener("click", () => { if ($("#status").classList.contai
 
 function showTab(tab) {
   document.querySelectorAll("nav button").forEach(x => x.classList.toggle("active", x.dataset.tab === tab));
-  for (const t of ["days", "locations", "map"]) $("#tab-" + t).classList.toggle("hidden", tab !== t);
+  for (const t of ["days", "locations", "map", "plan"]) $("#tab-" + t).classList.toggle("hidden", tab !== t);
+  if (tab === "plan" && !planLoaded) loadPlan();
   document.querySelector("main").classList.toggle("wide", tab === "map");
   store.set("tab", tab);
   if (tab === "map") { initMap(); setTimeout(() => map.invalidateSize(), 0); }

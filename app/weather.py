@@ -15,6 +15,8 @@ from datetime import date, datetime, timedelta
 
 import httpx
 
+from . import sun as sunmod
+
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 HOURLY = ["temperature_2m", "relative_humidity_2m", "precipitation", "snowfall", "snow_depth",
           "cloud_cover", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m",
@@ -296,6 +298,7 @@ def summaries(conn: sqlite3.Connection) -> dict[int, dict]:
                                             - datetime.fromisoformat(sun["sunrise"][:16])).total_seconds() / 60)
         w3, w3_from = _vec_mean(before)
         s["wind3d"], s["wind3d_from_txt"] = w3, compass(w3_from)
+        s.update(sunmod.describe(p["lat"], p["lon"], day, h1, h2, p["facing"]))
         if p["facing"] is not None:
             s["facing"] = p["facing"]
             if wind_from is not None:
