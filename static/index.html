@@ -133,6 +133,7 @@
   </nav>
   <div class="spacer"></div>
   <span id="status"></span>
+  <span class="tag hidden" id="demo-badge" title="Выдуманные данные: scripts/make_demo.py">демо-данные</span>
   <button class="btn" id="sync">Обновить из каталога</button>
 </header>
 
@@ -339,7 +340,7 @@ function renderDays() {
           ${spotSelectHtml(d)}
           ${d.location_manual ? '<div class="tag">задано вручную</div>' : ""}
           ${q && d.source_folder && norm(d.source_folder).includes(q) ? `<div class="tag">папка: ${hl(d.source_folder, q)}</div>` : ""}</td>
-      <td class="hide-sm muted">${hm(d.first_shot)}–${hm(d.last_shot)}</td>
+      <td class="hide-sm muted" style="white-space:nowrap">${hm(d.first_shot)}–${hm(d.last_shot)}</td>
       <td class="num">${d.photo_count}</td>
       <td class="num">${d.selected_count}</td>
       <td><textarea class="notes" rows="1" placeholder="Заметки…">${esc(d.notes)}</textarea></td>
@@ -412,8 +413,8 @@ function renderLocStats() {
     <span><b>${locations.length}</b>всего</span>
     <span><b>${by("place")}</b>${plural(by("place"), "место", "места", "мест")}</span>
     <span><b>${by("trip")}</b>${plural(by("trip"), "поездка", "поездки", "поездок")}</span>
-    <span><b>${by("other")}</b>не мест</span>
-    <span class="${noCoord.length ? "warn" : ""}"><b>${noCoord.length}</b>мест без координат</span>
+    <span><b>${by("other")}</b>${plural(by("other"), "не место", "не места", "не мест")}</span>
+    <span class="${noCoord.length ? "warn" : ""}"><b>${noCoord.length}</b>${plural(noCoord.length, "место", "места", "мест")} без координат</span>
     ${noCoordFreq ? `<span class="warn"><b>${noCoordFreq}</b>из них с 3+ выездами — начни с них</span>` : ""}
     <span><b>${places.length - noCoord.length}</b>с координатами</span>
     ${withDays < places.length ? `<span><b>${places.length - withDays}</b>без дней</span>` : ""}`;
@@ -909,6 +910,12 @@ restoreFilters(FILTERS.days, "days-filters");
 restoreFilters(FILTERS.locs, "locs-filters");
 locSort = store.get("locs-sort", locSort);
 showTab(store.get("tab", "days"));
+api("/api/info").then(i => {
+  if (!i.demo) return;
+  $("#demo-badge").classList.remove("hidden");
+  $("#sync").disabled = true;
+  $("#sync").title = "В демо-базе синхронизация отключена";
+}).catch(() => {});
 loadAll().catch(err => status("Ошибка: " + err.message, 8000));
 </script>
 </body>

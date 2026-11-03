@@ -8,6 +8,15 @@ FastAPI · SQLite · HTML/JS · чтение `.lrcat` (Lightroom Classic хра�
 
 > Статус: MVP в разработке.
 
+![Карта мест и точки внутри них](docs/screenshots/map.jpg)
+
+<table><tr>
+<td><img src="docs/screenshots/days.png" alt="Съёмочные дни"></td>
+<td><img src="docs/screenshots/places.png" alt="Справочник мест"></td>
+</tr></table>
+
+<sub>Скриншоты на демо-данных: места и выезды выдуманы.</sub>
+
 ## Что уже умеет
 
 - **Читает каталог Lightroom** — время съёмки, пути к файлам, отметки отбора; дубли с внешних дисков отфильтровываются
@@ -24,6 +33,12 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp config.example.json config.json   # указать путь к своему каталогу Lightroom
 cp locations.example.txt locations.txt   # необязательно: правила для мест (дубли, составные названия, типы)
 ./run.sh                             # → http://localhost:8765
+```
+### Посмотреть без своего каталога Lightroom
+
+```bash
+python3 scripts/make_demo.py            # создаёт data/demo.db с выдуманными местами и выездами
+JOURNAL_DB=data/demo.db ./run.sh        # журнал на демо-базе, синхронизация с каталогом отключена
 ```
 
 В интерфейсе запустить синхронизацию — журнал прочитает каталог. Повторная синхронизация подтягивает новые съёмки и не трогает ручные правки (заметки, назначенные места).

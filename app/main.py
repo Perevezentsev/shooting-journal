@@ -33,6 +33,12 @@ def load_config() -> dict:
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
 
+@app.get("/api/info")
+def api_info():
+    with db.connect() as conn:
+        return {"demo": db.is_demo(conn)}
+
+
 @app.get("/")
 def index():
     return FileResponse(STATIC / "index.html")
@@ -42,8 +48,10 @@ def index():
 
 @app.post("/api/sync")
 def api_sync():
-    cfg = load_config()
     with db.connect() as conn:
+        if db.is_demo(conn):
+            raise HTTPException(400, "Это демо-база: синхронизация с каталогом отключена")
+        cfg = load_config()
         try:
             return sync_catalog(conn, cfg, RULES_PATH)
         except (FileNotFoundError, ValueError) as e:

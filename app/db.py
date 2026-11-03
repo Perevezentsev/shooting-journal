@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "journal.db"
+ROOT = Path(__file__).resolve().parent.parent
+# Другую базу можно указать переменной окружения: JOURNAL_DB=data/demo.db ./run.sh
+DB_PATH = Path(os.environ.get("JOURNAL_DB") or ROOT / "data" / "journal.db")
+if not DB_PATH.is_absolute():
+    DB_PATH = ROOT / DB_PATH
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS locations (
@@ -74,6 +79,9 @@ CREATE TABLE IF NOT EXISTS location_aliases (
     PRIMARY KEY (alias_norm, location_id)
 );
 
+-- Служебные пометки базы, например demo = 1 у демо-базы
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+
 CREATE INDEX IF NOT EXISTS idx_days_date ON days(date);
 CREATE INDEX IF NOT EXISTS idx_photos_day ON photos(day_id);
 CREATE INDEX IF NOT EXISTS idx_daylocs_loc ON day_locations(location_id);
@@ -129,3 +137,8 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     _migrate(conn)
     conn.commit()
     return conn
+
+
+def is_demo(conn: sqlite3.Connection) -> bool:
+    row = conn.execute("SELECT value FROM meta WHERE key = 'demo'").fetchone()
+    return bool(row and row["value"] == "1")
