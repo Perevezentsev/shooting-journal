@@ -107,6 +107,11 @@
   .spot-icon .arrow { position: absolute; width: 0; height: 0; border-left: 7px solid transparent;
                       border-right: 7px solid transparent; border-bottom: 13px solid #e3b04b;
                       top: -13px; left: 4px; transform-origin: 7px 24px; filter: drop-shadow(0 0 1px rgba(0,0,0,.7)); }
+  .facing-handle { width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; cursor: grab; }
+  .facing-handle div { width: 0; height: 0; border-left: 9px solid transparent; border-right: 9px solid transparent;
+                       border-bottom: 18px solid #f08a3c; filter: drop-shadow(0 0 2px rgba(0,0,0,.8)); }
+  .facing-handle.unset div { border-bottom-color: #8e979c; }
+  #sp-facing-val { font-weight: 600; color: var(--ink); }
   .spot-sel { margin-top: 2px; font-size: 12px !important; color: var(--muted) !important; }
   #placer label.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
   #placer label.field input, #placer label.field select { border: 1px solid var(--line); background: var(--bg); padding: 6px 8px; color: var(--ink); }
@@ -588,7 +593,9 @@ const LAYERS = {
 };
 const KIND_COLOR = { place: "#2f7d96", trip: "#b07a3a", other: "#8e979c" };
 let map = null, markersLayer = null, spotsLayer = null, candidate = null, mapFitted = false;
-let spotEdit = null;                     // { locId, spotId } — добавление или правка точки
+let spotEdit = null;                     // { locId, spotId, facing } — добавление или правка точки
+let facingHandle = null, facingLine = null;
+const HANDLE_PX = 80;                    // длина стрелки направления на экране
 const markers = new Map();               // id места → маркер
 let placing = null;                      // { queue: [id], pos, skipped: Set, single }
 
@@ -606,6 +613,7 @@ function initMap() {
   (base[saved] || base["Топо"]).addTo(map);
   L.control.layers(base, null, { position: "topright" }).addTo(map);
   map.on("baselayerchange", e => store.set("map-layer", e.name));
+  map.on("zoomend", () => { if (spotEdit) drawFacing(); });
   L.control.scale({ imperial: false }).addTo(map);
   markersLayer = L.layerGroup().addTo(map);
   spotsLayer = L.layerGroup().addTo(map);
@@ -635,6 +643,12 @@ function renderMap(fit = false) {
       radius: 5 + Math.sqrt(l.day_count || 0) * 2.2,
       color: "#fff", weight: 1.5, fillColor: KIND_COLOR[l.kind] || KIND_COLOR.place, fillOpacity: .85,
     }).bindPopup(() => popupHtml(l)).bindTooltip(esc(l.name), { direction: "top", offset: [0, -6] });
+    // В режиме расстановки клик по кружку места — тоже клик по карте
+    m.on("click", e => {
+      if (!placing && !spotEdit) return;
+      m.closePopup();
+      setCandidate(e.latlng.lat, e.latlng.lng, "клик по карте", false);
+    });
     m.addTo(markersLayer); markers.set(l.id, m);
   }
   spotsLayer.clearLayers();
@@ -800,11 +814,79 @@ function setCandidate(lat, lon, source, fly = true) {
   if ($("#sp-save")) $("#sp-save").disabled = false;
   if (fly) map.flyTo([lat, lon], Math.max(map.getZoom(), 12), { duration: .6 });
   else map.setView([lat, lon], Math.max(map.getZoom(), 12));
+  if (spotEdit) {
+    candidate.on("drag", drawFacing);
+    map.once("moveend", drawFacing);
+    drawFacing();
+  }
   const btn = $("#pl-save");
   if (btn) btn.disabled = source === "текущая точка";
 }
 
-function clearCandidate() { if (candidate) { candidate.remove(); candidate = null; } }
+function clearCandidate() {
+  if (candidate) { candidate.remove(); candidate = null; }
+  clearFacing();
+}
+
+// --- стрелка направления берега: тянешь ручку — меняется направление ---
+function clearFacing() {
+  if (facingHandle) { facingHandle.remove(); facingHandle = null; }
+  if (facingLine) { facingLine.remove(); facingLine = null; }
+}
+
+function facingEnd(deg) {
+  const c = map.latLngToContainerPoint(candidate.getLatLng());
+  const a = (deg ?? 0) * Math.PI / 180;
+  return map.containerPointToLatLng([c.x + HANDLE_PX * Math.sin(a), c.y - HANDLE_PX * Math.cos(a)]);
+}
+
+function bearingTo(latlng) {
+  const c = map.latLngToContainerPoint(candidate.getLatLng());
+  const p = map.latLngToContainerPoint(latlng);
+  const deg = (Math.atan2(p.x - c.x, -(p.y - c.y)) * 180 / Math.PI + 360) % 360;
+  return Math.round(deg / 5) * 5 % 360;          // шаг 5°
+}
+
+function handleIcon(deg, unset) {
+  return L.divIcon({ className: "", iconSize: [26, 26], iconAnchor: [13, 13],
+    html: `<div class="facing-handle ${unset ? "unset" : ""}" style="transform:rotate(${deg ?? 0}deg)"><div></div></div>` });
+}
+
+function drawFacing() {
+  if (!spotEdit || !candidate || !map) return;
+  const f = spotEdit.facing;
+  const end = facingEnd(f);
+  const style = { color: f == null ? "#8e979c" : "#f08a3c", weight: 3, dashArray: f == null ? "4 6" : null, interactive: false };
+  if (facingLine) facingLine.setLatLngs([candidate.getLatLng(), end]).setStyle(style);
+  else facingLine = L.polyline([candidate.getLatLng(), end], style).addTo(map);
+  if (facingHandle) { facingHandle.setLatLng(end).setIcon(handleIcon(f, f == null)); }
+  else {
+    facingHandle = L.marker(end, { draggable: true, icon: handleIcon(f, f == null), zIndexOffset: 1000 })
+      .bindTooltip("Тяни, чтобы указать, куда смотрит берег", { direction: "top", offset: [0, -14] })
+      .addTo(map);
+    facingHandle.on("drag", e => {
+      spotEdit.facing = bearingTo(e.target.getLatLng());
+      facingLine.setLatLngs([candidate.getLatLng(), e.target.getLatLng()]).setStyle({ color: "#f08a3c", dashArray: null });
+      // Поворачиваем ту же иконку: setIcon во время перетаскивания обрывает его
+      const el = e.target.getElement()?.querySelector(".facing-handle");
+      if (el) { el.style.transform = `rotate(${spotEdit.facing}deg)`; el.classList.remove("unset"); }
+      showFacingValue();
+    });
+    facingHandle.on("dragend", drawFacing);           // вернуть ручку на постоянную длину
+  }
+  showFacingValue();
+}
+
+function showFacingValue() {
+  const el = $("#sp-facing-val"), sel = $("#sp-facing");
+  if (!el) return;
+  const f = spotEdit.facing;
+  el.textContent = f == null ? "не задано" : `${f}° · ${compass16(f)}`;
+  if (sel) sel.value = FACING.some(([d]) => d === f) ? f : (f == null ? "" : "custom");
+}
+
+const COMPASS16 = ["С", "ССВ", "СВ", "ВСВ", "В", "ВЮВ", "ЮВ", "ЮЮВ", "Ю", "ЮЮЗ", "ЮЗ", "ЗЮЗ", "З", "ЗСЗ", "СЗ", "ССЗ"];
+const compass16 = d => COMPASS16[Math.round(((d % 360) + 360) % 360 / 22.5) % 16];
 
 async function saveCandidate() {
   const l = currentPlace();
@@ -845,8 +927,8 @@ function editSpot(locId, spotId = null) {
   map.closePopup();
   const l = locations.find(x => x.id === locId);
   const sp = spotId ? spots.find(x => x.id === spotId) : null;
-  spotEdit = { locId, spotId };
   clearCandidate();
+  spotEdit = { locId, spotId, facing: sp ? sp.facing : null };
   const firstSpot = !spots.some(x => x.location_id === locId);
   $("#placer").innerHTML = `
     <div class="row" style="justify-content:space-between">
@@ -857,9 +939,11 @@ function editSpot(locId, spotId = null) {
     <label class="field">Название
       <input id="sp-name" value="${esc(sp ? sp.name : "")}" placeholder="например, западная сторона мыса">
     </label>
-    <label class="field">Берег смотрит на (в сторону воды)
-      <select id="sp-facing">${FACING.map(([d, t]) => `<option value="${d}" ${(sp ? sp.facing : null) === (d === "" ? null : d) ? "selected" : ""}>${t}</option>`).join("")}</select>
+    <label class="field">Берег смотрит на (в сторону воды): <span id="sp-facing-val">не задано</span>
+      <select id="sp-facing">${FACING.map(([d, t]) => `<option value="${d}">${d === "" ? "не задано" : t}</option>`).join("")}
+        <option value="custom" hidden>своё</option></select>
     </label>
+    <div class="hint">Тяни оранжевую стрелку на карте или выбери из списка.</div>
     <label class="check"><input type="checkbox" id="sp-def" ${sp ? (sp.is_default ? "checked" : "") : (firstSpot ? "checked" : "")}>
       точка по умолчанию для этого места</label>
     <div class="hint">${sp ? "Перетащи маркер, если нужно сдвинуть точку." : "Кликни по карте, где эта точка. Маркер можно перетащить."}
@@ -869,6 +953,13 @@ function editSpot(locId, spotId = null) {
     </div>`;
   $("#sp-cancel").addEventListener("click", stopSpotEdit);
   $("#sp-save").addEventListener("click", saveSpot);
+  $("#sp-facing").addEventListener("change", e => {
+    const v = e.target.value;
+    if (v === "custom") return;
+    spotEdit.facing = v === "" ? null : +v;
+    drawFacing();
+  });
+  showFacingValue();
   if (sp) { setCandidate(sp.lat, sp.lon, "текущая точка", false); $("#sp-save").disabled = false; }
   else if (l.lat != null) map.setView([l.lat, l.lon], Math.max(map.getZoom(), 13));
   $("#sp-name").focus();
@@ -885,9 +976,8 @@ async function saveSpot() {
   if (!name) { status("Ошибка: нужно название точки", 4000); $("#sp-name").focus(); return; }
   if (!candidate) { status("Ошибка: кликни по карте, где точка", 4000); return; }
   const { lat, lng } = candidate.getLatLng();
-  const fv = $("#sp-facing").value;
   const body = { name, coords: `${lat.toFixed(6)}, ${lng.toFixed(6)}`,
-                 facing: fv === "" ? null : +fv, is_default: $("#sp-def").checked };
+                 facing: spotEdit.facing, is_default: $("#sp-def").checked };
   try {
     if (spotEdit.spotId) await api(`/api/spots/${spotEdit.spotId}`, { method: "PUT", body: JSON.stringify(body) });
     else await api(`/api/locations/${spotEdit.locId}/spots`, { method: "POST", body: JSON.stringify(body) });
