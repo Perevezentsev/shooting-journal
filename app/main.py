@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from . import db
 from .locations import KINDS, merge_locations, set_day_locations
 from .sync import sync_catalog
+from . import weather
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
@@ -84,7 +85,9 @@ def api_days():
             locs.setdefault(r["day_id"], []).append(
                 {"id": r["id"], "name": r["name"], "lat": r["lat"], "lon": r["lon"], "kind": r["kind"]})
         spots, defaults = _spots(conn)
+        wx = weather.summaries(conn)
     for d in days:
+        d["weather"] = wx.get(d["id"])
         d["locations"] = locs.get(d["id"], [])
         # Точка дня: указанная явно, иначе точка по умолчанию (если место одно)
         spot, by_default = spots.get(d["spot_id"]), False
@@ -300,6 +303,26 @@ def api_delete_spot(spot_id: int):
                 conn.execute("UPDATE spots SET is_default = 1 WHERE id = ?", (nxt["id"],))
         conn.commit()
     return {"ok": True}
+
+
+# --- Погода ------------------------------------------------------------------
+
+weather_loader = weather.Loader()
+
+
+@app.post("/api/weather/fetch")
+def api_weather_fetch():
+    """Запускает фоновую загрузку погоды для дней, у которых её ещё нет."""
+    return weather_loader.start(db.connect)
+
+
+@app.get("/api/weather/status")
+def api_weather_status():
+    st = weather_loader.status()
+    if not st["running"]:
+        with db.connect() as conn:
+            st["pending"] = len(weather.plan(conn))
+    return st
 
 
 # --- Поиск мест на карте (геокодер OpenStreetMap Nominatim) ------------------

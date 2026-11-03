@@ -65,6 +65,10 @@
   .noloc select { color: var(--warn); }
   .nocoord { color: var(--warn); font-size: 12px; }
   .tag { font-size: 12px; color: var(--muted); }
+  td.wx { font-size: 13px; line-height: 1.35; min-width: 170px; }
+  td.wx .t { font-weight: 600; }
+  td.wx .sub { color: var(--muted); font-size: 12px; }
+  td.wx .shore { color: var(--warm); font-size: 12px; }
   .muted { color: var(--muted); }
   a { color: var(--accent); }
   mark { background: color-mix(in srgb, var(--warm) 35%, transparent); color: inherit; border-radius: 2px; }
@@ -100,9 +104,9 @@
   .spot-icon span { display: block; width: 10px; height: 10px; background: #e3b04b; border: 2px solid #fff;
                     transform: rotate(45deg); box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
   .spot-icon.def span { background: #f08a3c; width: 12px; height: 12px; }
-  .spot-icon .arrow { position: absolute; width: 0; height: 0; border-left: 5px solid transparent;
-                      border-right: 5px solid transparent; border-bottom: 9px solid #e3b04b;
-                      top: -9px; left: 6px; transform-origin: 5px 20px; filter: drop-shadow(0 0 1px rgba(0,0,0,.6)); }
+  .spot-icon .arrow { position: absolute; width: 0; height: 0; border-left: 7px solid transparent;
+                      border-right: 7px solid transparent; border-bottom: 13px solid #e3b04b;
+                      top: -13px; left: 4px; transform-origin: 7px 24px; filter: drop-shadow(0 0 1px rgba(0,0,0,.7)); }
   .spot-sel { margin-top: 2px; font-size: 12px !important; color: var(--muted) !important; }
   #placer label.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
   #placer label.field input, #placer label.field select { border: 1px solid var(--line); background: var(--bg); padding: 6px 8px; color: var(--ink); }
@@ -153,15 +157,18 @@
       <label><input type="checkbox" id="d-nocoord"> без координат</label>
       <label><input type="checkbox" id="d-notes"> с заметками</label>
       <button class="link" id="d-reset">сбросить</button>
+      <span class="spacer"></span>
+      <button class="btn ghost small" id="wx-fetch" title="Архив Open-Meteo: погода по месту или точке каждого дня">Загрузить погоду</button>
     </div>
     <div class="summary" id="days-summary"></div>
     <table>
       <thead><tr>
-        <th>Дата</th><th>Место</th><th class="hide-sm">Время</th>
-        <th class="num">Кадров</th><th class="num">Отобр.</th><th style="width:36%">Заметки</th>
+        <th>Дата</th><th>Место</th><th class="hide-sm">Время</th><th class="hide-sm">Погода</th>
+        <th class="num">Кадров</th><th class="num">Отобр.</th><th style="width:28%">Заметки</th>
       </tr></thead>
       <tbody id="days-body"></tbody>
     </table>
+    <div class="summary" style="margin-top:10px">Погода: <a href="https://open-meteo.com/" target="_blank">Open-Meteo.com</a> (CC BY 4.0), архив ERA5 и др.; данные появляются с задержкой около 5 дней.</div>
   </section>
 
   <!-- МЕСТА -->
@@ -325,7 +332,7 @@ function renderDays() {
     const m = d.date.slice(0, 7);
     if (m !== month) {
       month = m;
-      html += `<tr class="month"><td colspan="6">${MONTHS[+m.slice(5) - 1]} ${m.slice(0, 4)}</td></tr>`;
+      html += `<tr class="month"><td colspan="7">${MONTHS[+m.slice(5) - 1]} ${m.slice(0, 4)}</td></tr>`;
     }
     const kinds = [...new Set(d.locations.map(l => l.kind))].filter(k => k !== "place");
     const noCoords = d.locations.filter(l => l.kind === "place" && l.lat == null).map(l => l.name);
@@ -341,14 +348,56 @@ function renderDays() {
           ${d.location_manual ? '<div class="tag">задано вручную</div>' : ""}
           ${q && d.source_folder && norm(d.source_folder).includes(q) ? `<div class="tag">папка: ${hl(d.source_folder, q)}</div>` : ""}</td>
       <td class="hide-sm muted" style="white-space:nowrap">${hm(d.first_shot)}–${hm(d.last_shot)}</td>
+      <td class="hide-sm wx">${weatherHtml(d.weather)}</td>
       <td class="num">${d.photo_count}</td>
       <td class="num">${d.selected_count}</td>
       <td><textarea class="notes" rows="1" placeholder="Заметки…">${esc(d.notes)}</textarea></td>
     </tr>`;
   }
-  $("#days-body").innerHTML = html || `<tr><td colspan="6" class="empty">${
+  $("#days-body").innerHTML = html || `<tr><td colspan="7" class="empty">${
     days.length ? "Ничего не найдено — попробуй ослабить фильтры." : "Пока пусто — нажми «Обновить из каталога»."}</td></tr>`;
 }
+
+// Погода дня: коротко, в 2–4 строки
+const fmt = (x, d = 0) => x == null ? "" : (+x).toFixed(d);
+function weatherHtml(w) {
+  if (!w) return `<span class="sub">—</span>`;
+  const tr = w.temp == null ? null : Math.round(w.temp);
+  const t = tr == null ? "" : `${tr > 0 ? "+" : tr < 0 ? "−" : ""}${Math.abs(tr)}°`;
+  const dur = m => m >= 60 ? `${Math.floor(m / 60)} ч${m % 60 ? " " + (m % 60) + " мин" : ""}` : `${m} мин`;
+  const prec = [w.precip >= 0.2 ? `осадки ${fmt(w.precip, 1)} мм` : "", w.snowfall >= 0.2 ? `снег ${fmt(w.snowfall, 1)} см` : ""].filter(Boolean).join(", ");
+  const wind = w.wind == null ? "" : `ветер ${w.wind_from_txt} ${fmt(w.wind)} м/с${w.gust != null && w.gust - w.wind >= 3 ? `, порывы ${fmt(w.gust)}` : ""}`;
+  const a = w.after_sunrise_min;
+  const sun = w.sunrise ? `восход ${w.sunrise}${a == null ? "" : a >= 0 ? ` · старт через ${dur(a)}` : ` · старт за ${dur(-a)} до восхода`}` : "";
+  const w3 = w.wind3d != null ? `3 дня: ${w.wind3d_from_txt} ${fmt(w.wind3d)} м/с` : "";
+  const shore = [w.shore_wind ? "ветер " + w.shore_wind : "", w.water || ""].filter(Boolean).join("; ");
+  return `<div><span class="t">${t}</span> ${esc(w.sky || "")}${w.cloud != null ? ` · ${fmt(w.cloud)}%` : ""}</div>
+    ${wind ? `<div class="sub">${esc(wind)}</div>` : ""}
+    ${prec ? `<div class="sub">${esc(prec)}</div>` : ""}
+    ${sun ? `<div class="sub">${esc(sun)}</div>` : ""}
+    ${w3 ? `<div class="sub">${esc(w3)}</div>` : ""}
+    ${shore ? `<div class="shore">${esc(shore)}</div>` : ""}`;
+}
+
+// --- загрузка погоды ---
+async function pollWeather() {
+  const st = await api("/api/weather/status");
+  const b = $("#wx-fetch");
+  if (st.running) {
+    b.disabled = true;
+    status(`Погода: ${st.done} из ${st.total || "…"} запросов`, 0);
+    setTimeout(pollWeather, 1500);
+    return;
+  }
+  b.disabled = false;
+  b.textContent = st.pending ? `Загрузить погоду · ${st.pending}` : "Погода загружена";
+  if (st.error) status("Ошибка погоды: " + st.error);
+  else if (st.finished_at) { status("Погода загружена", 4000); await loadAll(); }
+}
+$("#wx-fetch").addEventListener("click", async () => {
+  try { await api("/api/weather/fetch", { method: "POST" }); pollWeather(); }
+  catch (err) { status("Ошибка: " + err.message, 6000); }
+});
 
 // Выбор точки внутри места — только если у места дня есть точки
 function spotSelectHtml(d) {
@@ -916,7 +965,10 @@ api("/api/info").then(i => {
   $("#sync").disabled = true;
   $("#sync").title = "В демо-базе синхронизация отключена";
 }).catch(() => {});
-loadAll().catch(err => status("Ошибка: " + err.message, 8000));
+loadAll().then(() => api("/api/weather/status")).then(st => {
+  $("#wx-fetch").textContent = st.pending ? `Загрузить погоду · ${st.pending}` : "Погода загружена";
+  if (st.running) pollWeather();
+}).catch(err => status("Ошибка: " + err.message, 8000));
 </script>
 </body>
 </html>
