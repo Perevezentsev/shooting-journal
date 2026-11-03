@@ -16,6 +16,7 @@ from datetime import date, datetime, timedelta
 
 import httpx
 
+from . import inat
 from . import sun as sunmod
 from . import weather as wx
 
@@ -257,6 +258,22 @@ def build(conn: sqlite3.Connection, dates: list[date], all_places: bool = False,
             "per_date": per_date,
         })
 
+    # iNaturalist: виды и наблюдатели рядом в эти месяцы (из кэша; чего нет — догрузит клиент)
+    inat.ensure_schema(conn)
+    months = inat.months_around(dates, SEASON_DAYS)
+    jobs = []
+    for p in places:
+        loc = locs[p["id"]]
+        info = inat.place_info(conn, loc["lat"], loc["lon"], inat.RADIUS_KM, months)
+        p["inat"] = info
+        if info is None:
+            jobs.append([loc["lat"], loc["lon"], months])
+    with_obs = sorted(p["inat"]["observers"] for p in places if p["inat"])
+    for p in places:
+        if p["inat"] and len(with_obs) >= 3:
+            rank = with_obs.index(p["inat"]["observers"]) / (len(with_obs) - 1)
+            p["inat"]["crowd"] = "тихо" if rank < 1 / 3 else "людно" if rank > 2 / 3 else "средне"
+
     # Сортировка: опыт в этот сезон весит наравне с похожестью погоды.
     # Похожесть на день из другого сезона — вполовину: птицы и свет тогда другие.
     for p in places:
@@ -278,4 +295,5 @@ def build(conn: sqlite3.Connection, dates: list[date], all_places: bool = False,
         p["why"] = why
     places.sort(key=lambda p: (p["score"], p["total_visits"]), reverse=True)
     return {"dates": [t.isoformat() for t in dates], "places": places,
+            "inat_jobs": jobs, "inat_months": months, "inat_radius_km": inat.RADIUS_KM,
             "season_days": SEASON_DAYS, "generated_at": datetime.now().isoformat(timespec="minutes")}

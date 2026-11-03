@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from . import db
 from .locations import KINDS, merge_locations, set_day_locations
 from .sync import sync_catalog
-from . import plan, weather
+from . import inat, plan, weather
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
@@ -347,6 +347,52 @@ def api_plan(dates: str | None = None, all: bool = False, refresh: bool = False)
             raise HTTPException(502, f"Прогноз недоступен: {e}")
         except RuntimeError as e:
             raise HTTPException(502, str(e))
+
+
+# --- iNaturalist ---------------------------------------------------------------
+
+inat_loader = inat.Loader()
+
+
+class InatJobs(BaseModel):
+    jobs: list[list]       # [[lat, lon, [месяцы] | null], …]
+
+
+@app.post("/api/inat/fetch")
+def api_inat_fetch(body: InatJobs):
+    jobs = [(float(j[0]), float(j[1]), [int(m) for m in j[2]] if j[2] else None) for j in body.jobs[:60]]
+    return inat_loader.start(db.connect, jobs)
+
+
+@app.get("/api/inat/status")
+def api_inat_status():
+    return inat_loader.status()
+
+
+@app.get("/api/inat/place/{loc_id}")
+def api_inat_place(loc_id: int, months: str | None = None):
+    """Виды рядом с местом — за указанные месяцы (например, 10,11) или за весь год.
+    Для карточки на карте; загружает, если нет в кэше."""
+    try:
+        ms = sorted({int(m) for m in months.split(",") if m}) if months else None
+    except ValueError:
+        raise HTTPException(400, "Месяцы — числа через запятую")
+    if ms and not all(1 <= m <= 12 for m in ms):
+        raise HTTPException(400, "Месяцы — от 1 до 12")
+    with db.connect() as conn:
+        inat.ensure_schema(conn)
+        loc = conn.execute("SELECT * FROM locations WHERE id = ?", (loc_id,)).fetchone()
+        if not loc or loc["lat"] is None:
+            raise HTTPException(404, "У места нет координат")
+        info = inat.place_info(conn, loc["lat"], loc["lon"], inat.RADIUS_KM, ms)
+        if info is None:
+            try:
+                with httpx.Client(headers=inat.HEADERS) as client:
+                    inat.fetch_place(conn, client, loc["lat"], loc["lon"], inat.RADIUS_KM, ms)
+            except (httpx.HTTPError, RuntimeError) as e:
+                raise HTTPException(502, f"iNaturalist недоступен: {e}")
+            info = inat.place_info(conn, loc["lat"], loc["lon"], inat.RADIUS_KM, ms)
+    return {**info, "name": loc["name"], "lat": loc["lat"], "lon": loc["lon"]}
 
 
 # --- Поиск мест на карте (геокодер OpenStreetMap Nominatim) ------------------

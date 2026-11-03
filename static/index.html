@@ -95,6 +95,14 @@
   .pcard .flag { color: var(--warn); font-size: 12px; }
   .pcard .note { font-size: 12px; color: var(--muted); font-style: italic; }
   .pcard .why { font-size: 12px; color: var(--accent); margin-top: 2px; }
+  .inat { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .inat b { color: var(--ink); font-weight: 500; }
+  .crowd { display: inline-block; padding: 0 6px; border-radius: 8px; font-size: 11px; margin-left: 4px; border: 1px solid var(--line); }
+  .crowd.тихо { color: #6fbf73; border-color: #6fbf73; }
+  .crowd.людно { color: var(--warn); border-color: var(--warn); }
+  .sp-list { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+  .sp-list div { display: flex; justify-content: space-between; gap: 8px; }
+  .sp-list i { color: var(--muted); font-size: 11px; }
   .locchip { display: inline-flex; gap: 6px; align-items: center; background: var(--accent); color: var(--panel);
              border-radius: 14px; padding: 3px 10px; font-size: 13px; }
   .locchip.hidden { display: none; }
@@ -252,7 +260,7 @@
     </div>
     <div class="summary" id="plan-summary"></div>
     <div id="plan-list"></div>
-    <div class="summary" style="margin-top:10px">Места — где ты бывал в эти недели прошлых лет (±2 недели). Порядок: сколько раз и с каким отбором ты снимал здесь в эти недели, плюс похожесть прогноза на твои удачные дни (на дни из другого сезона — вполовину). «Похоже на» — твой удачный день на этом месте с самой похожей погодой: направление и сила ветра, облачность, дождь, ветер у берега. Прогноз: <a href="https://open-meteo.com/" target="_blank">Open-Meteo.com</a> (CC BY 4.0).</div>
+    <div class="summary" style="margin-top:10px">Места — где ты бывал в эти недели прошлых лет (±2 недели). Порядок: сколько раз и с каким отбором ты снимал здесь в эти недели, плюс похожесть прогноза на твои удачные дни (на дни из другого сезона — вполовину). «Похоже на» — твой удачный день на этом месте с самой похожей погодой: направление и сила ветра, облачность, дождь, ветер у берега. Виды рядом и людность — <a href="https://www.inaturalist.org/" target="_blank">iNaturalist</a> (подтверждённые наблюдения птиц и млекопитающих в радиусе 10 км; «тихо / людно» — по числу наблюдателей относительно остальных мест в списке). Прогноз: <a href="https://open-meteo.com/" target="_blank">Open-Meteo.com</a> (CC BY 4.0).</div>
   </section>
 
   <!-- КАРТА -->
@@ -762,7 +770,8 @@ function popupHtml(l) {
   return `<b>${esc(l.name)}</b><br>
     ${l.day_count} ${plural(l.day_count, "выезд", "выезда", "выездов")}${l.last_date ? ", последний " + dmy(l.last_date) : ""}<br>
     <span class="muted">${l.lat.toFixed(5)}, ${l.lon.toFixed(5)} · ${KIND_LABEL[l.kind]}</span><br>
-    <button class="link" onclick="openPlaceDays('place', ${l.id})">дни в журнале</button><br>
+    <button class="link" onclick="openPlaceDays('place', ${l.id})">дни в журнале</button> ·
+    <button class="link" onclick="showInatPanel(${l.id})">виды рядом (iNat)</button><br>
     ${l.spot_count ? `${l.spot_count} ${plural(l.spot_count, "точка", "точки", "точек")} внутри · ` : ""}<button class="link" onclick="editSpot(${l.id})">добавить точку</button><br>
     <button class="link" onclick="startPlacing([${l.id}])">переставить место</button> ·
     <button class="link" onclick="startMerge(${l.id})">объединить с…</button> ·
@@ -1259,6 +1268,81 @@ function planDayHtml(iso, v) {
   </div>`;
 }
 
+// --- iNaturalist ---
+const INAT_TAXA = "Aves,Mammalia";
+function inatUrl(lat, lon, radius, months) {
+  const q = new URLSearchParams({ lat, lng: lon, radius, iconic_taxa: INAT_TAXA, quality_grade: "research", view: "species" });
+  if (months && months.length) q.set("month", months.join(","));
+  return "https://www.inaturalist.org/observations?" + q;
+}
+function inatLine(p, r) {
+  if (!p.inat) return `<div class="inat">iNaturalist: загружаю наблюдения рядом…</div>`;
+  const i = p.inat;
+  const top = i.species.slice(0, 8).map(x => `<b>${esc(x.name)}</b> ${x.count}`).join(", ");
+  return `<div class="inat">рядом в эти месяцы (iNat, ${r.inat_radius_km} км, все годы): ${top || "наблюдений нет"}${i.total_species > 8 ? ` и ещё ${i.total_species - 8}` : ""}
+    · ${i.observers} ${plural(i.observers, "наблюдатель", "наблюдателя", "наблюдателей")}${i.crowd ? `<span class="crowd ${i.crowd}">${i.crowd}</span>` : ""}
+    · <a target="_blank" href="${inatUrl(p.lat, p.lon, r.inat_radius_km, r.inat_months)}">открыть в iNat</a></div>`;
+}
+
+let inatPolling = false, inatTried = new Set();
+async function loadInatFor(r) {
+  const key = r.dates.join(",") + "|" + $("#plan-all").checked;
+  if (!r.inat_jobs.length || inatTried.has(key)) return;
+  inatTried.add(key);
+  try {
+    await api("/api/inat/fetch", { method: "POST", body: JSON.stringify({ jobs: r.inat_jobs }) });
+    pollInat();
+  } catch (err) { status("Ошибка iNat: " + err.message); }
+}
+async function pollInat() {
+  if (inatPolling) return;
+  inatPolling = true;
+  try {
+    for (;;) {
+      const st = await api("/api/inat/status");
+      if (st.running) { status(`iNaturalist: ${st.done} из ${st.total} мест`, 0); await new Promise(r => setTimeout(r, 1500)); continue; }
+      if (st.error) status("Ошибка iNat: " + st.error);
+      else { status("iNaturalist загружен", 3000); if (!$("#tab-plan").classList.contains("hidden")) loadPlan(); }
+      break;
+    }
+  } finally { inatPolling = false; }
+}
+
+// Виды рядом с местом на карте — в те же месяцы, что и «Выходные» (выбранные даты ±2 недели)
+const MONTHS_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+function seasonMonths() {
+  const ds = planDates || defaultPlanDates();
+  const ms = new Set();
+  for (const iso of ds) for (const k of [-14, 0, 14]) {
+    const d = new Date(iso + "T12:00"); d.setDate(d.getDate() + k); ms.add(d.getMonth() + 1);
+  }
+  return [...ms].sort((a, b) => a - b);
+}
+const monthsLabel = ms => ms.map(m => MONTHS_SHORT[m - 1]).join("–");
+
+async function showInatPanel(id, allYear = false) {
+  map?.closePopup();
+  placing = null; spotEdit = null; mergeFrom = null; clearCandidate();
+  const l = locations.find(x => x.id === id);
+  const ms = allYear ? null : seasonMonths();
+  const period = allYear ? "во все месяцы за все годы" : `в ${monthsLabel(ms)} за все годы (месяцы — как во «Выходных»)`;
+  const head = `<div class="row" style="justify-content:space-between"><h2>Виды рядом</h2><button class="link" id="in-close">закрыть</button></div>
+    <div class="place-name">${esc(l.name)}</div>`;
+  $("#placer").innerHTML = head + `<div class="hint">iNaturalist, птицы и млекопитающие, 10 км, ${period}. Загружаю…</div>`;
+  $("#in-close").addEventListener("click", () => renderMap());
+  try {
+    const i = await api(`/api/inat/place/${id}` + (ms ? `?months=${ms.join(",")}` : ""));
+    $("#placer").innerHTML = head + `
+      <div class="hint">iNaturalist, птицы и млекопитающие в радиусе ${i.radius_km} км, <b>${period}</b>, только подтверждённые наблюдения.<br>
+        ${i.total_species} ${plural(i.total_species, "вид", "вида", "видов")} · ${i.observations} ${plural(i.observations, "наблюдение", "наблюдения", "наблюдений")} · ${i.observers} ${plural(i.observers, "наблюдатель", "наблюдателя", "наблюдателей")}</div>
+      <button class="link" id="in-toggle">${allYear ? `показать только ${monthsLabel(seasonMonths())}` : "показать все месяцы"}</button>
+      <div class="sp-list">${i.species.slice(0, 30).map(x => `<div><span>${esc(x.name)} <i>${esc(x.sci)}</i></span><span>${x.count}</span></div>`).join("") || "<div class='hint'>Наблюдений нет</div>"}</div>
+      <a target="_blank" href="${inatUrl(i.lat, i.lon, i.radius_km, ms)}">открыть в iNaturalist</a>`;
+    $("#in-close").addEventListener("click", () => renderMap());
+    $("#in-toggle").addEventListener("click", () => showInatPanel(id, !allYear));
+  } catch (err) { status("Ошибка: " + err.message, 6000); renderMap(); }
+}
+
 // Ссылка на день журнала: вкладка «Дни», прокрутка и подсветка
 const dayLink = (id, iso) => `<button class="daylink" onclick="openDay(${id})">${dmy(iso)}</button>`;
 
@@ -1278,6 +1362,7 @@ function openDay(id) {
 }
 
 function renderPlan(r) {
+  loadInatFor(r);
   const n = r.places.length;
   $("#plan-summary").innerHTML = n
     ? `<b>${n}</b> ${plural(n, "место", "места", "мест")} · сначала те, где ты чаще и удачнее снимал в эти недели и прогноз похож на твои удачные дни`
@@ -1292,7 +1377,8 @@ function renderPlan(r) {
             p.season_rate != null ? ` · отбор ${p.season_rate}%` : ""}`
         : "в эти недели не был"} · всего выездов: ${p.total_visits}
         ${p.why.length ? `<div class="why">почему здесь: ${esc(p.why.join("; "))}</div>` : ""}
-        ${p.notes.map(x => `<div class="note">${dayLink(x.day_id, x.date)}: ${esc(x.text)}</div>`).join("")}</div>
+        ${p.notes.map(x => `<div class="note">${dayLink(x.day_id, x.date)}: ${esc(x.text)}</div>`).join("")}
+        ${inatLine(p, r)}</div>
       <div class="cols">${r.dates.map(d => planDayHtml(d, p.per_date[d])).join("")}</div>
     </div>`).join("");
 }
