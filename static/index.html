@@ -137,6 +137,21 @@
   .hint { font-size: 12px; color: var(--muted); }
   .legend { font-size: 12px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+  .find-icon { width: 18px; height: 18px; border-radius: 4px; background: #c2410c; border: 2px solid #fff;
+               box-shadow: 0 0 0 1px rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center;
+               color: #fff; font-size: 10px; font-weight: 700; }
+  .find-icon.open { background: #2f7d4f; }
+  .fieldlink { font-size: 12px; margin-top: 2px; }
+  #placer .finds button.item { display: block; width: 100%; text-align: left; background: none; border: 0;
+                               border-top: 1px solid var(--line); padding: 6px 0; font: inherit; color: inherit; cursor: pointer; }
+  #placer .finds button.item:hover { color: var(--accent); }
+  .find-pop textarea, .find-pop input[type=text] { width: 100%; font: inherit; margin: 3px 0;
+                                                    color: #1d2226; background: #fff; border: 1px solid #c9c6bc; }
+  .pick-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: 4px 0; max-height: 260px; overflow-y: auto; }
+  .pick-grid button { border: 1px solid var(--line); background: none; padding: 2px; cursor: pointer; font-size: 11px; color: inherit; }
+  .pick-grid button:hover { border-color: var(--accent); }
+  .pick-grid img { width: 100%; height: 56px; object-fit: cover; margin: 0; max-width: none; }
+  .find-pop img { max-width: 260px; max-height: 200px; display: block; margin: 4px 0; border-radius: 4px; }
   .spot-icon { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; }
   .spot-icon span { display: block; width: 10px; height: 10px; background: #e3b04b; border: 2px solid #fff;
                     transform: rotate(45deg); box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
@@ -424,6 +439,9 @@ function renderDays() {
           ${kinds.length ? `<div class="tag">${kinds.map(k => KIND_LABEL[k]).join(", ")}</div>` : ""}
           ${noCoords.length ? `<div class="nocoord">нет координат${d.locations.length > 1 ? ": " + esc(noCoords.join(", ")) : ""}</div>` : ""}
           ${spotSelectHtml(d)}
+          ${d.track_m || d.finds ? `<div class="fieldlink"><button class="link" onclick="openDayMap(${d.id})">на карте: ${
+            d.track_m ? "трек " + (d.track_m / 1000).toFixed(1) + " км" : ""}${d.track_m && d.finds ? " · " : ""}${
+            d.finds ? d.finds + " " + plural(d.finds, "заметка", "заметки", "заметок") : ""}</button></div>` : ""}
           ${d.location_manual ? '<div class="tag">задано вручную</div>' : ""}
           ${q && d.source_folder && norm(d.source_folder).includes(q) ? `<div class="tag">папка: ${hl(d.source_folder, q)}</div>` : ""}</td>
       <td class="hide-sm muted" style="white-space:nowrap">${hm(d.first_shot)}–${hm(d.last_shot)}</td>
@@ -739,7 +757,7 @@ function renderMap(fit = false) {
     const local = placed.filter(l => l.kind === "place");
     map.fitBounds(L.latLngBounds((local.length ? local : placed).map(l => [l.lat, l.lon])).pad(.15), { maxZoom: 11 });
   }
-  if (!placing && !spotEdit && !mergeFrom) renderPlacerIdle();
+  if (!placing && !spotEdit && !mergeFrom && !dayView) renderPlacerIdle();
 }
 
 function fitAll() {
@@ -1407,6 +1425,191 @@ $("#sync").addEventListener("click", async () => {
 });
 
 $("#status").addEventListener("click", () => { if ($("#status").classList.contains("error")) status(""); });
+
+// --- День на карте: трек, снимки, заметки с телефона -------------------------
+let dayView = null;                      // { id, data }
+let dayLayer = null;
+const findMarkers = new Map();
+
+// UTC из GPX → местное «настенное» время (пояс из config, по умолчанию +3)
+function utcToLocal(iso, tzH) {
+  if (!iso) return "";
+  const t = new Date(new Date(iso).getTime() + tzH * 3600e3);
+  return t.toISOString().slice(11, 19);
+}
+const fmtOffset = s => !s ? "0" : (s > 0 ? "+" : "−") + (Math.abs(s) >= 60 ? Math.floor(Math.abs(s) / 60) + " мин " : "") + (Math.abs(s) % 60 ? Math.abs(s) % 60 + " с" : "");
+
+async function openDayMap(id) {
+  showTab("map");
+  initMap();
+  if (!map) return;
+  try {
+    const data = await api(`/api/days/${id}/field`);
+    dayView = { id, data };
+    drawDay(true);
+  } catch (err) { status("Ошибка: " + err.message, 8000); }
+}
+
+function closeDayMap() {
+  dayView = null;
+  if (dayLayer) dayLayer.clearLayers();
+  findMarkers.clear();
+  renderPlacerIdle();
+}
+
+function drawDay(fit = false) {
+  const d = dayView.data, tz = d.utc_offset_h;
+  if (!dayLayer) dayLayer = L.layerGroup().addTo(map);
+  dayLayer.clearLayers(); findMarkers.clear();
+  const pts = [];
+  if (d.track.length) {
+    L.polyline(d.track, { color: "#d9480f", weight: 3, opacity: .85 }).addTo(dayLayer);
+    L.circleMarker(d.track[0], { radius: 5, color: "#fff", weight: 2, fillColor: "#2f7d4f", fillOpacity: 1 })
+      .bindTooltip("старт " + utcToLocal(d.started_at, tz).slice(0, 5)).addTo(dayLayer);
+    L.circleMarker(d.track.at(-1), { radius: 5, color: "#fff", weight: 2, fillColor: "#1d2226", fillOpacity: 1 })
+      .bindTooltip("финиш " + utcToLocal(d.ended_at, tz).slice(0, 5)).addTo(dayLayer);
+    pts.push(...d.track);
+  }
+  // Сначала обычные кадры, сверху отобранные
+  const rank = p => p.processed ? 2 : p.selected ? 1 : 0;
+  const photos = d.photos.filter(p => p.lat != null).sort((a, b) => rank(a) - rank(b));
+  for (const p of photos) {
+    L.circleMarker([p.lat, p.lon], p.processed
+      ? { radius: 7.5, color: "#fff", weight: 2, fillColor: "#c2185b", fillOpacity: 1 }
+      : p.selected
+      ? { radius: 6, color: "#fff", weight: 1.5, fillColor: "#f2b100", fillOpacity: 1 }
+      : { radius: 3.5, color: "#1d2226", weight: 1, fillColor: "#fff", fillOpacity: .9 })
+      .bindPopup(`<b>${esc(p.file_name)}</b><br>${hm(p.capture_time)}${p.capture_time ? ":" + p.capture_time.slice(17, 19) : ""}
+        ${p.processed ? " · обработан ★5" : p.selected ? " · отобран ★" + p.rating : ""}
+        <br><span class="muted">${p.geo_gap_s ? `место по треку, между точками ${p.geo_gap_s} с` : "место по треку, точно в момент записи точки"}</span>
+        ${p.sensitive ? `<br>рядом скрытая заметка: при выгрузке<br>координаты этого кадра будут примерными` : ""}`)
+      .addTo(dayLayer);
+    pts.push([p.lat, p.lon]);
+  }
+  d.finds.forEach((f, i) => {
+    const icon = L.divIcon({ className: "", iconSize: [18, 18], iconAnchor: [9, 9],
+      html: `<div class="find-icon ${f.sensitive ? "" : "open"}">${i + 1}</div>` });
+    const m = L.marker([f.lat, f.lon], { icon, zIndexOffset: 500 })
+      .bindTooltip(esc(f.name || "заметка " + (i + 1)), { direction: "top", offset: [0, -8] })
+      .bindPopup(() => findPopup(f, i), { minWidth: 270 })
+      .addTo(dayLayer);
+    findMarkers.set(f.id, m);
+    pts.push([f.lat, f.lon]);
+  });
+  if (fit && pts.length) setTimeout(() => { map.invalidateSize(); map.fitBounds(L.latLngBounds(pts).pad(.1)); }, 50);
+  renderDayPanel();
+}
+
+function findPopup(f, i) {
+  const tz = dayView.data.utc_offset_h;
+  return `<div class="find-pop" data-id="${f.id}">
+    <b>Заметка ${i + 1}</b> · ${utcToLocal(f.time, tz).slice(0, 5)}
+    <div class="fp-photo">${f.photo || f.photo_file ? `<img src="/api/finds/${f.id}/photo?v=${photoVer}" alt=""
+        onerror="this.outerHTML='<div class=muted>фото не найдено в папке дня</div>'">` : ""}
+      <button class="link" onclick="event.stopPropagation(); pickPhoto(${f.id})">${f.photo || f.photo_file ? "выбрать другое фото" : "привязать фото из папки"}</button></div>
+    <input type="text" id="fp-name" placeholder="что это: погрыз бобра, дупло…" value="${esc(f.name)}">
+    <textarea id="fp-note" rows="2" placeholder="подробности">${esc(f.note)}</textarea>
+    <label><input type="checkbox" id="fp-sens" ${f.sensitive ? "checked" : ""}> скрытая: при выгрузке из журнала — только примерно, ~1 км</label><br>
+    <button class="btn small" onclick="saveFind(${f.id})">Сохранить</button>
+    <span class="muted">${f.lat.toFixed(5)}, ${f.lon.toFixed(5)}</span></div>`;
+}
+
+let photoVer = Date.now();
+
+// Выбор фото заметки из снимков телефона в папке дня
+async function pickPhoto(id) {
+  const box = document.querySelector(`.find-pop[data-id="${id}"] .fp-photo`);
+  box.innerHTML = '<div class="muted">Ищу снимки в папке дня…</div>';
+  try {
+    const r = await api(`/api/days/${dayView.id}/phone-photos`);
+    if (!r.photos.length) {
+      box.innerHTML = `<div class="muted">В папке дня нет JPG/PNG. Положи снимки с телефона в ${esc(r.folder || "папку дня")} или в подпапку.</div>`;
+      return;
+    }
+    box.innerHTML = `<div class="muted">Выбери снимок (подпись — время съёмки, «занято» — уже у другой заметки):</div>
+      <div class="pick-grid">${r.photos.map(p => `<button type="button" data-path="${esc(p.path)}" title="${esc(p.path)}">
+        <img src="/api/days/${dayView.id}/phone-photo?path=${encodeURIComponent(p.path)}" loading="lazy" alt="">
+        <span>${p.time && p.time.slice(0, 10) === dayView.data.day.date ? p.time.slice(11, 16) : esc(p.path.split("/").pop().replace(/\.[^.]+$/, "").slice(0, 12))}${p.find_id && p.find_id !== id ? " · занято" : p.find_id === id ? " · сейчас" : ""}</span></button>`).join("")}</div>`;
+    box.querySelectorAll(".pick-grid button").forEach(b => b.addEventListener("click", async e => {
+      e.stopPropagation();
+      try {
+        await api(`/api/finds/${id}`, { method: "PUT", body: JSON.stringify({ photo_file: b.dataset.path }) });
+        dayView.data.finds.find(f => f.id === id).photo_file = b.dataset.path;
+        photoVer = Date.now();
+        const m = findMarkers.get(id); m.closePopup(); m.openPopup();
+      } catch (err) { status("Ошибка: " + err.message, 8000); }
+    }));
+  } catch (err) { box.innerHTML = `<div class="nocoord">${esc(err.message)}</div>`; }
+}
+
+async function saveFind(id) {
+  const box = document.querySelector(`.find-pop[data-id="${id}"]`);
+  const body = { name: box.querySelector("#fp-name").value, note: box.querySelector("#fp-note").value,
+                 sensitive: box.querySelector("#fp-sens").checked };
+  try {
+    await api(`/api/finds/${id}`, { method: "PUT", body: JSON.stringify(body) });
+    Object.assign(dayView.data.finds.find(f => f.id === id), body, { sensitive: body.sensitive ? 1 : 0 });
+    // Пересчитать пометки «рядом скрытая находка» у кадров
+    dayView.data = await api(`/api/days/${dayView.id}/field`);
+    map.closePopup();
+    drawDay();
+    status("Заметка сохранена");
+  } catch (err) { status("Ошибка: " + err.message, 8000); }
+}
+
+function renderDayPanel() {
+  const d = dayView.data, tz = d.utc_offset_h, total = d.photos.length;
+  const dur = d.started_at ? Math.round((new Date(d.ended_at) - new Date(d.started_at)) / 60000) : 0;
+  const off = d.day.clock_offset_s || 0;
+  const sug = d.suggest_offset_s;
+  $("#placer").innerHTML = `
+    <div class="row" style="justify-content:space-between"><h2>День на карте</h2>
+      <button class="link" id="dv-close">к местам</button></div>
+    <div class="place-name">${esc(d.day.name || "без места")}</div>
+    <div class="muted">${dmy(d.day.date)} · ${esc(d.day.folder || "")}</div>
+    ${d.track.length ? `<div>Трек <b>${(d.length_m / 1000).toFixed(1)} км</b>, ${utcToLocal(d.started_at, tz).slice(0, 5)}–${utcToLocal(d.ended_at, tz).slice(0, 5)}
+        (${Math.floor(dur / 60)} ч ${dur % 60} мин)</div>
+      <div>Снимков на треке: <b>${d.matched}</b> из ${total}
+        · <span style="color:#f2b100">●</span> отобрано ${d.photos.filter(p => p.selected).length}
+        · <span style="color:#c2185b">●</span> обработано ${d.photos.filter(p => p.processed).length}${d.out_of_track ? ` · <span class="nocoord" style="display:inline">вне трека: ${d.out_of_track}</span>` : ""}</div>
+      <label class="field">Часы камеры в этот день ${off ? "сдвинуты на " + fmtOffset(off) : "точные"}
+        <div class="row" style="gap:6px">
+          <input type="number" id="dv-off" value="${off}" step="1" style="width:110px"> <span class="muted">с, + если спешили</span>
+          <button class="btn small" id="dv-off-save">Пересчитать</button></div></label>
+      ${sug != null && sug !== 0 && sug !== off && d.out_of_track ? `<div class="hint">Все кадры попадут в трек при сдвиге ${fmtOffset(sug)}.
+        Но если часть снимков сделана до или после записи трека, так и должно быть.
+        <button class="link" id="dv-sug">подставить</button></div>` : ""}
+      <div class="hint">Если ты уже поправил время в Lightroom (Edit Capture Time), сдвиг должен быть 0.</div>`
+    : `<div class="hint">Трека нет: GPX с точками маршрута не найден в папке дня.</div>`}
+    <div class="finds"><h2 style="margin-top:12px">Заметки с телефона · ${d.finds.length}</h2>
+      ${d.finds.map((f, i) => `<button class="item" data-id="${f.id}">${i + 1}. ${utcToLocal(f.time, tz).slice(0, 5)} ·
+        ${esc(f.name || (f.photo ? "фото-заметка" : "заметка"))} ${f.sensitive ? '<span class="muted">· скрытая</span>' : ""}</button>`).join("")
+        || '<div class="hint">Нет. Точки из GPX («Места» OsmAnd) появятся здесь.</div>'}
+    </div>
+    <div style="margin-top:12px">
+      <a class="btn ghost small" href="/api/days/${d.day.id}/field.gpx">GPX для отправки</a>
+      <a class="link" href="/api/days/${d.day.id}/field.gpx?safe=false" onclick="return confirm('Точные координаты всех заметок, включая скрытые. Только для себя. Скачать?')">точный GPX</a>
+      <div class="hint">В GPX для отправки скрытые заметки огрублены до ~1 км, а трек вокруг них вырезан.</div>
+    </div>
+    <div style="margin-top:8px"><button class="link" id="dv-rescan">перечитать GPX из папки</button></div>`;
+  $("#dv-close").onclick = closeDayMap;
+  $("#dv-rescan").onclick = async () => {
+    try { const r = await api(`/api/days/${d.day.id}/field/rescan`, { method: "POST" });
+          status(`GPX: треков ${r.tracks}, заметок ${r.finds}`); openDayMap(d.day.id); }
+    catch (err) { status("Ошибка: " + err.message, 8000); }
+  };
+  const saveOff = async v => {
+    try { await api(`/api/days/${d.day.id}/clock`, { method: "PUT", body: JSON.stringify({ clock_offset_s: v }) });
+          openDayMap(d.day.id); }
+    catch (err) { status("Ошибка: " + err.message, 8000); }
+  };
+  $("#dv-off-save")?.addEventListener("click", () => saveOff(parseInt($("#dv-off").value) || 0));
+  $("#dv-sug")?.addEventListener("click", () => saveOff(sug));
+  document.querySelectorAll("#placer .finds button.item").forEach(b => b.addEventListener("click", () => {
+    const m = findMarkers.get(+b.dataset.id);
+    if (m) { map.setView(m.getLatLng(), Math.max(map.getZoom(), 16)); m.openPopup(); }
+  }));
+}
 
 function showTab(tab) {
   document.querySelectorAll("nav button").forEach(x => x.classList.toggle("active", x.dataset.tab === tab));

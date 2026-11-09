@@ -135,6 +135,8 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
     _migrate(conn)
+    from . import field          # треки и находки (v0.6)
+    field.ensure_schema(conn)
     conn.commit()
     return conn
 

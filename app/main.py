@@ -7,17 +7,19 @@ import threading
 import time
 import traceback
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import db
 from .locations import KINDS, merge_locations, set_day_locations
+from .lrcat import Photo
 from .sync import sync_catalog
-from . import inat, plan, weather
+from . import field, inat, plan, weather
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
@@ -54,7 +56,11 @@ def api_sync():
             raise HTTPException(400, "Это демо-база: синхронизация с каталогом отключена")
         cfg = load_config()
         try:
-            return sync_catalog(conn, cfg, RULES_PATH)
+            res = sync_catalog(conn, cfg, RULES_PATH)
+            if cfg.get("utc_offset_h") is not None:
+                field.UTC_OFFSET_H = cfg["utc_offset_h"]
+            res["field"] = field.import_all(conn, cfg)
+            return res
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(400, str(e))
         except Exception as e:
@@ -86,7 +92,11 @@ def api_days():
                 {"id": r["id"], "name": r["name"], "lat": r["lat"], "lon": r["lon"], "kind": r["kind"]})
         spots, defaults = _spots(conn)
         wx = weather.summaries(conn)
+        tracks = {r[0]: r[1] for r in conn.execute("SELECT day_id, SUM(length_m) FROM tracks GROUP BY day_id")}
+        nfinds = {r[0]: r[1] for r in conn.execute("SELECT day_id, COUNT(*) FROM finds GROUP BY day_id")}
     for d in days:
+        d["track_m"] = tracks.get(d["id"])
+        d["finds"] = nfinds.get(d["id"], 0)
         d["weather"] = wx.get(d["id"])
         d["locations"] = locs.get(d["id"], [])
         # Точка дня: указанная явно, иначе точка по умолчанию (если место одно)
@@ -122,6 +132,165 @@ def api_update_day(day_id: int, body: DayUpdate):
             conn.execute("UPDATE days SET spot_id = ? WHERE id = ?", (body.spot_id, day_id))
         conn.commit()
     return {"ok": True}
+
+
+# --- Поле: трек, снимки, находки ---------------------------------------------
+
+def _cfg_soft() -> dict:
+    return json.loads(CONFIG_PATH.read_text(encoding="utf-8")) if CONFIG_PATH.exists() else {}
+
+
+def _day_or_404(conn, day_id: int):
+    day = conn.execute("SELECT * FROM days WHERE id = ?", (day_id,)).fetchone()
+    if not day:
+        raise HTTPException(404, "День не найден")
+    return day
+
+
+@app.get("/api/days/{day_id}/field")
+def api_day_field(day_id: int):
+    with db.connect() as conn:
+        day = _day_or_404(conn, day_id)
+        trk = conn.execute("""SELECT MIN(started_at) s, MAX(ended_at) e, SUM(length_m) m, SUM(points) n
+                              FROM tracks WHERE day_id = ?""", (day_id,)).fetchone()
+        files = [r[0] for r in conn.execute("SELECT file_path FROM tracks WHERE day_id = ?", (day_id,))]
+        track = [[la, lo] for _, la, lo in field._load_track(conn, day_id)]
+        finds = [dict(r) for r in conn.execute("SELECT * FROM finds WHERE day_id = ? ORDER BY time", (day_id,))]
+        secret = [(f["lat"], f["lon"]) for f in finds if f["sensitive"]]
+        photos = []
+        for r in conn.execute("""SELECT image_id, file_name, capture_time, pick, rating, lat, lon, geo_gap_s
+                                 FROM photos WHERE day_id = ? ORDER BY capture_time""", (day_id,)):
+            p = dict(r)
+            p["selected"] = (p["rating"] or 0) >= Photo.SELECTED_RATING
+            p["processed"] = (p["rating"] or 0) >= Photo.PROCESSED_RATING
+            p["sensitive"] = p["lat"] is not None and field.near_sensitive(p["lat"], p["lon"], secret)
+            photos.append(p)
+        has = bool(track)
+        return {
+            "day": {"id": day["id"], "date": day["date"], "name": day["source_name"],
+                    "folder": day["source_folder"], "clock_offset_s": day["clock_offset_s"]},
+            "track": track, "files": files,
+            "started_at": trk["s"], "ended_at": trk["e"], "length_m": trk["m"], "points": trk["n"],
+            "photos": photos, "finds": finds,
+            "matched": sum(1 for p in photos if p["lat"] is not None),
+            "out_of_track": sum(1 for p in photos if p["lat"] is None) if has else 0,
+            "suggest_offset_s": field.suggest_offset(conn, day_id) if has else None,
+            "utc_offset_h": field.UTC_OFFSET_H,
+        }
+
+
+class ClockIn(BaseModel):
+    clock_offset_s: int
+
+
+@app.put("/api/days/{day_id}/clock")
+def api_day_clock(day_id: int, body: ClockIn):
+    """Сдвиг часов камеры в этот день: + спешили, − отставали. Пересчитывает координаты кадров."""
+    with db.connect() as conn:
+        _day_or_404(conn, day_id)
+        conn.execute("UPDATE days SET clock_offset_s = ? WHERE id = ?", (body.clock_offset_s, day_id))
+        res = field.geotag_day(conn, day_id)
+        conn.commit()
+    return res
+
+
+@app.post("/api/days/{day_id}/field/rescan")
+def api_day_rescan(day_id: int):
+    """Перечитать GPX из папки дня (без полной синхронизации с каталогом)."""
+    with db.connect() as conn:
+        day = _day_or_404(conn, day_id)
+        res = field.import_day(conn, day, _cfg_soft().get("path_map"))
+        conn.commit()
+    return res
+
+
+@app.get("/api/days/{day_id}/field.gpx")
+def api_day_gpx(day_id: int, safe: bool = True, hidden: str = "coarse"):
+    """Выгрузка дня в GPX. По умолчанию безопасная: скрытые находки огрублены, трек вокруг них вырезан."""
+    with db.connect() as conn:
+        day = _day_or_404(conn, day_id)
+        text = field.export_gpx(conn, day_id, safe=safe, hidden="drop" if hidden == "drop" else "coarse")
+    name = f'{day["date"]}_{day["source_name"] or "день"}{"" if safe else "_точно"}.gpx'
+    return Response(text, media_type="application/gpx+xml",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
+
+
+class FindIn(BaseModel):
+    name: str | None = None
+    note: str | None = None
+    sensitive: bool | None = None
+    photo_file: str | None = None           # путь к фото в папке дня; "" — отвязать
+
+
+@app.put("/api/finds/{find_id}")
+def api_update_find(find_id: int, body: FindIn):
+    with db.connect() as conn:
+        if not conn.execute("SELECT 1 FROM finds WHERE id = ?", (find_id,)).fetchone():
+            raise HTTPException(404, "Находка не найдена")
+        for k in ("name", "note"):
+            if k in body.model_fields_set:
+                conn.execute(f"UPDATE finds SET {k} = ? WHERE id = ?",
+                             ((getattr(body, k) or "").strip() or None, find_id))
+        if "photo_file" in body.model_fields_set:
+            conn.execute("UPDATE finds SET photo_file = ? WHERE id = ?", (body.photo_file or None, find_id))
+        if body.sensitive is not None:
+            conn.execute("UPDATE finds SET sensitive = ? WHERE id = ?", (int(body.sensitive), find_id))
+        conn.commit()
+    return {"ok": True}
+
+
+def _find_ctx(conn, find_id: int):
+    f = conn.execute("SELECT * FROM finds WHERE id = ?", (find_id,)).fetchone()
+    if not f:
+        raise HTTPException(404, "Заметка не найдена")
+    day = conn.execute("SELECT * FROM days WHERE id = ?", (f["day_id"],)).fetchone()
+    return dict(f), field.day_folder(conn, day, _cfg_soft().get("path_map"))
+
+
+@app.get("/api/finds/{find_id}/photo")
+def api_find_photo(find_id: int):
+    """Фото-заметка с телефона из папки дня: выбранная вручную или найденная по имени/времени."""
+    with db.connect() as conn:
+        f, folder = _find_ctx(conn, find_id)
+    found = field.resolve_photo(folder, f) if folder and folder.is_dir() else None
+    if found:
+        return FileResponse(found)
+    raise HTTPException(404, "Файл фото-заметки не найден в папке дня")
+
+
+@app.get("/api/days/{day_id}/phone-photos")
+def api_phone_photos(day_id: int):
+    """Снимки с телефона в папке дня — чтобы привязать к заметке вручную."""
+    with db.connect() as conn:
+        day = _day_or_404(conn, day_id)
+        folder = field.day_folder(conn, day, _cfg_soft().get("path_map"))
+        finds = [dict(r) for r in conn.execute("SELECT * FROM finds WHERE day_id = ?", (day_id,))]
+    if not folder or not folder.is_dir():
+        return {"folder": str(folder) if folder else None, "photos": []}
+    files = field.phone_photos(folder)
+    used = {}
+    for f in finds:
+        p = field.resolve_photo(folder, f, files)
+        if p:
+            used[str(p.resolve())] = f["id"]
+    out = []
+    for p in files:
+        t = field.photo_time(p)
+        out.append({"path": p.relative_to(folder).as_posix(), "time": t.isoformat() if t else None,
+                    "find_id": used.get(str(p.resolve()))})
+    return {"folder": str(folder), "photos": out}
+
+
+@app.get("/api/days/{day_id}/phone-photo")
+def api_phone_photo(day_id: int, path: str):
+    with db.connect() as conn:
+        day = _day_or_404(conn, day_id)
+        folder = field.day_folder(conn, day, _cfg_soft().get("path_map"))
+    if folder:
+        p = (folder / path).resolve()
+        if p.is_file() and folder.resolve() in p.parents and p.suffix.lower() in field.PHOTO_EXT:
+            return FileResponse(p)
+    raise HTTPException(404, "Нет такого файла")
 
 
 # --- Локации -----------------------------------------------------------------

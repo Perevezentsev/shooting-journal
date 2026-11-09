@@ -42,9 +42,13 @@ class Photo:
     rating: int               # 0..5
     keywords: list[str] = field(default_factory=list)
 
+    # Как ты размечаешь в Lightroom: ★★ — отобран, ★★★★★ — обработан
+    SELECTED_RATING = 2
+    PROCESSED_RATING = 5
+
     @property
     def selected(self) -> bool:
-        return self.pick == 1 or self.rating > 0
+        return self.rating >= self.SELECTED_RATING
 
 
 @dataclass
@@ -101,7 +105,16 @@ def open_catalog(catalog_path: str | Path, copy: bool = True) -> sqlite3.Connect
         tmp_dir = Path(tempfile.mkdtemp(prefix="lrcat_"))
         tmp_path = tmp_dir / catalog_path.name
         shutil.copy2(catalog_path, tmp_path)
-        catalog_path = tmp_path
+        # Пока Lightroom открыт, свежие правки (звёзды, ключевые слова) лежат в журнале
+        # «….lrcat-wal» рядом с каталогом и попадают в сам файл только при закрытии.
+        # Копируем журнал вместе с каталогом — тогда SQLite прочитает и их.
+        wal = catalog_path.with_name(catalog_path.name + "-wal")
+        if wal.exists():
+            shutil.copy2(wal, tmp_dir / wal.name)
+        # Копия наша — открываем на запись, чтобы SQLite мог применить журнал
+        conn = sqlite3.connect(tmp_path)
+        conn.row_factory = sqlite3.Row
+        return conn
     conn = sqlite3.connect(f"file:{catalog_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
