@@ -1830,13 +1830,18 @@ function spApplyLocal(keepSel = false) {
   const f = spFilterVal(), g = $("#sp-group").value;
   sp.series = sp.all.filter(s => (!f && !g) || spPool(s).some(t => spHit(t, f)));
   if (!keepSel) { sp.sel = 0; sp.shown = 0; }
-  const c = sp.counts, scope = spScopeText();
-  $("#sp-summary").innerHTML = sp.frames ?
-    `Серий в списке: <b>${sp.series.length}</b>${scope ? ` (${esc(scope)})` : ""} · всего серий: не разобрано <b>${c.todo}</b>, подтверждено <b>${c.confirmed}</b>, неопределимо <b>${c.unid ?? 0}</b>, «не то» <b>${c.rejected}</b>, без вида <b>${c.none}</b> · кадров распознано ${sp.frames}` :
-    `Распознавание ещё не запускалось: <code>python -m app.species run</code>`;
   $("#sp-sp-q").classList.toggle("on", !!f);
+  spRenderSummary();
   buildCards();
   renderSpecies();
+}
+// Сводка над сеткой — после любого действия, а не только при загрузке
+function spRenderSummary() {
+  const c = sp.counts || {}, scope = spScopeText();
+  $("#sp-summary").innerHTML = sp.frames ?
+    `Серий в списке: <b>${sp.series.length}</b>${scope ? ` (${esc(scope)})` : ""} · всего серий: не разобрано <b>${c.todo ?? 0}</b>, подтверждено <b>${c.confirmed ?? 0}</b>, неопределимо <b>${c.unid ?? 0}</b>, «не то» <b>${c.rejected ?? 0}</b>, без вида <b>${c.none ?? 0}</b> · кадров распознано ${sp.frames}` :
+    `Распознавание ещё не запускалось: <code>python -m app.species run</code>`;
+  $("#nav-species").textContent = c.todo || "";
 }
 
 // Варианты выпадающего списка по текущей выборке: виды и семейства с числом серий
@@ -2045,6 +2050,7 @@ async function spDecide(i, action, t = null, source = null) {
     const keep = state === "all" || c.series.state === state;
     if (!keep) { sp.series = sp.series.filter(s => s !== c.series); sp.all = sp.all.filter(s => s !== c.series); }
     const next = keep ? i + 1 : i;
+    spRenderSummary();
     buildCards();
     renderSpecies();
     spSelect(next);
