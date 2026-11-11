@@ -19,7 +19,7 @@ from . import db
 from .locations import KINDS, merge_locations, set_day_locations
 from .lrcat import Photo
 from .sync import sync_catalog
-from . import field, inat, plan, weather
+from . import field, inat, plan, review, weather
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
@@ -296,6 +296,126 @@ def api_phone_photo(day_id: int, path: str):
         if p.is_file() and folder.resolve() in p.parents and p.suffix.lower() in field.PHOTO_EXT:
             return FileResponse(p)
     raise HTTPException(404, "Нет такого файла")
+
+
+# --- Виды: разбор предсказаний ----------------------------------------------
+
+@app.get("/api/species/meta")
+def api_species_meta():
+    with db.connect() as conn:
+        return review.meta(conn)
+
+
+@app.get("/api/species/items")
+def api_species_items(day: str | None = None, loc: int | None = None, state: str = "todo",
+                      conf: str | None = None, kind: str | None = None):
+    with db.connect() as conn:
+        res = review.items(conn, day=day, loc=loc, state=state, conf=conf, kind=kind)
+    cfg = _cfg_soft()
+    if cfg.get("catalog_path") and res["series"]:
+        # нарезать кропы первых карточек заранее, пока смотришь начало списка
+        review.warm(db.connect, cfg, [s["rep"] for s in res["series"][:240]])
+    return res
+
+
+@app.get("/api/species/search")
+def api_species_search(q: str):
+    with db.connect() as conn:
+        return review.search(conn, q)
+
+
+class SpeciesDecision(BaseModel):
+    ids: list[int]
+    action: str                         # confirm | reject | none | clear
+    sci: str | None = None
+    ru: str | None = None
+    inat_id: int | None = None
+    source: str | None = None           # top1..top3 | search | series
+
+
+@app.post("/api/species/decide")
+def api_species_decide(body: SpeciesDecision):
+    if not body.ids:
+        raise HTTPException(400, "Нет кадров")
+    with db.connect() as conn:
+        before = review.previous(conn, body.ids)
+        try:
+            n = review.decide(conn, body.ids, body.action, body.sci, body.ru, body.inat_id, body.source)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    return {"ok": True, "n": n, "undo": {"ids": body.ids, "rows": before}}
+
+
+class SpeciesBatchItem(BaseModel):
+    ids: list[int]
+    sci: str | None = None
+    ru: str | None = None
+    inat_id: int | None = None
+
+
+class SpeciesBatch(BaseModel):
+    action: str                         # confirm | reject | none
+    items: list[SpeciesBatchItem]
+    source: str | None = "bulk"
+
+
+@app.post("/api/species/decide-batch")
+def api_species_decide_batch(body: SpeciesBatch):
+    """Массовое решение (серии с уверенным топ-1, «без вида» на день) — одна отмена на всё."""
+    ids = [i for it in body.items for i in it.ids]
+    if not ids:
+        raise HTTPException(400, "Нет кадров")
+    with db.connect() as conn:
+        before = review.previous(conn, ids)
+        try:
+            for it in body.items:
+                review.decide(conn, it.ids, body.action, it.sci, it.ru, it.inat_id, body.source)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    return {"ok": True, "n": len(ids), "series": len(body.items), "undo": {"ids": ids, "rows": before}}
+
+
+class SpeciesUndo(BaseModel):
+    ids: list[int]
+    rows: list[dict]
+
+
+@app.post("/api/species/undo")
+def api_species_undo(body: SpeciesUndo):
+    with db.connect() as conn:
+        review.restore(conn, body.ids, body.rows)
+    return {"ok": True}
+
+
+def _species_cfg() -> dict:
+    cfg = _cfg_soft()
+    if not cfg.get("catalog_path"):
+        raise HTTPException(404, "Нет config.json — превью Lightroom недоступны")
+    return cfg
+
+
+@app.get("/api/species/crop/{image_id}")
+def api_species_crop(image_id: int):
+    cfg = _species_cfg()
+    with db.connect() as conn:
+        try:
+            p = review.crop_jpeg(conn, cfg, image_id)
+        except (ImportError, FileNotFoundError) as e:
+            raise HTTPException(404, f"Кроп недоступен: {e}")
+    if not p:
+        raise HTTPException(404, "Нет превью")
+    return FileResponse(p, headers={"Cache-Control": "max-age=86400"})
+
+
+@app.get("/api/species/frame/{image_id}")
+def api_species_frame(image_id: int):
+    try:
+        data = review.big_jpeg(_species_cfg(), image_id)
+    except (ImportError, FileNotFoundError) as e:
+        raise HTTPException(404, f"Превью недоступно: {e}")
+    if not data:
+        raise HTTPException(404, "Нет превью")
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "max-age=3600"})
 
 
 # --- Локации -----------------------------------------------------------------

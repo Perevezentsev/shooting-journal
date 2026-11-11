@@ -172,6 +172,70 @@
   .leaflet-popup-content { font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
   .leaflet-popup-content b { font-size: 14px; }
   .leaflet-container { font: inherit; }
+  /* --- Виды --- */
+  .sp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+  .sp-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
+             display: flex; flex-direction: column; outline: 2px solid transparent; outline-offset: -1px; }
+  .sp-card.sel { outline-color: var(--accent); }
+  .sp-card.confirmed { border-color: #6fbf73; }
+  .sp-card.rejected { opacity: .6; }
+  .sp-img { position: relative; aspect-ratio: 1; background: var(--bg); cursor: zoom-in; }
+  .sp-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .sp-card.full .sp-img img { object-fit: contain; }
+  .sp-img .badge { position: absolute; top: 6px; padding: 1px 7px; border-radius: 10px; font-size: 12px;
+                   background: rgba(0,0,0,.6); color: #fff; }
+  .sp-img .n { right: 6px; cursor: pointer; }
+  .sp-img .kind { left: 6px; }
+  .sp-body { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+  .sp-when { color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; gap: 6px; }
+  .sp-top { display: flex; flex-direction: column; gap: 3px; }
+  .sp-top button { display: flex; align-items: baseline; gap: 6px; text-align: left; background: var(--bg);
+                   border: 1px solid transparent; border-radius: 5px; padding: 3px 6px; font: inherit;
+                   color: var(--ink); cursor: pointer; }
+  .sp-top button:hover { border-color: var(--accent); }
+  .sp-top button.on { border-color: #6fbf73; }
+  .sp-top .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sp-top .nm small { color: var(--muted); font-style: italic; margin-left: 4px; }
+  .sp-top i { font-style: normal; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .sp-top i.hi { color: #4f9f53; } .sp-top i.lo { color: var(--warn); }
+  kbd { font: 11px ui-monospace, monospace; border: 1px solid var(--line); border-bottom-width: 2px;
+        border-radius: 4px; padding: 0 4px; color: var(--muted); background: var(--panel); }
+  .sp-none { color: var(--muted); font-size: 12px; font-style: italic; }
+  .sp-dec { font-weight: 600; } .sp-dec.ok { color: #4f9f53; } .sp-dec.no { color: var(--warn); }
+  .sp-act { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; }
+  .sp-search input { width: 100%; border: 1px solid var(--line); background: var(--bg); padding: 5px 8px; }
+  .sp-search .results { margin-top: 4px; max-height: 220px; overflow-y: auto; }
+  .sp-search .results button { padding: 4px 6px; font-size: 12px; }
+  .sp-search .results .rare { color: var(--warm); font-size: 11px; margin-left: 4px; }
+  .sp-more { padding: 18px; text-align: center; color: var(--muted); }
+  .sp-keys { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 10px; }
+  .sp-frame-of { font-size: 11px; color: var(--accent); }
+  #sp-bulk-box { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 10; display: flex;
+                 align-items: center; justify-content: center; padding: 16px; }
+  .sp-bulk-panel { background: var(--panel); border-radius: 10px; padding: 16px; width: min(1100px, 100%);
+                   max-height: 90vh; display: flex; flex-direction: column; gap: 12px; }
+  .sp-bulk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; overflow-y: auto; }
+  .sp-bulk-item { display: flex; gap: 8px; align-items: center; border: 1px solid var(--line); border-radius: 6px;
+                  padding: 4px; font-size: 12px; cursor: pointer; }
+  .sp-bulk-item:has(input:not(:checked)) { opacity: .45; }
+  .sp-bulk-item img { width: 56px; height: 56px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
+  .sp-card.none { opacity: .6; }
+  .sp-combo { position: relative; }
+  .sp-combo input[type=search] { width: 230px; border: 1px solid var(--line); background: var(--panel); padding: 5px 8px; }
+  .sp-combo input.on { border-color: var(--accent); }
+  .sp-combo-list { position: absolute; top: 100%; left: 0; z-index: 5; width: 320px; max-height: 360px; overflow-y: auto;
+                   background: var(--panel); border: 1px solid var(--line); border-radius: 6px; margin-top: 2px;
+                   box-shadow: 0 6px 18px rgba(0,0,0,.15); }
+  .sp-combo-list button { display: flex; width: 100%; gap: 8px; justify-content: space-between; align-items: baseline;
+                          background: none; border: 0; border-bottom: 1px solid var(--line); padding: 5px 8px;
+                          font: inherit; font-size: 13px; color: var(--ink); text-align: left; cursor: pointer; }
+  .sp-combo-list button:hover, .sp-combo-list button.on { background: var(--bg); }
+  .sp-combo-list small { color: var(--muted); font-style: italic; }
+  .sp-combo-list i { font-style: normal; color: var(--muted); font-variant-numeric: tabular-nums; }
+  #sp-box { position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 10; display: flex;
+            flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: #eee; }
+  #sp-box img { max-width: 94vw; max-height: 84vh; object-fit: contain; }
+  #sp-box .cap { font-size: 13px; }
   @media (max-width: 760px) {
     .map-wrap { flex-direction: column-reverse; height: auto; }
     #map { height: 60vh; flex: none; }
@@ -193,6 +257,7 @@
     <button data-tab="locations">Места<span class="count" id="nav-locs"></span></button>
     <button data-tab="map">Карта<span class="count" id="nav-map"></span></button>
     <button data-tab="plan">Выходные</button>
+    <button data-tab="species">Виды<span class="count" id="nav-species"></span></button>
   </nav>
   <div class="spacer"></div>
   <span id="status"></span>
@@ -276,6 +341,63 @@
     <div class="summary" id="plan-summary"></div>
     <div id="plan-list"></div>
     <div class="summary" style="margin-top:10px">Места — где ты бывал в эти недели прошлых лет (±2 недели). Порядок: сколько раз и с каким отбором ты снимал здесь в эти недели, плюс похожесть прогноза на твои удачные дни (на дни из другого сезона — вполовину). «Похоже на» — твой удачный день на этом месте с самой похожей погодой: направление и сила ветра, облачность, дождь, ветер у берега. Виды рядом и людность — <a href="https://www.inaturalist.org/" target="_blank">iNaturalist</a> (подтверждённые наблюдения птиц и млекопитающих в радиусе 10 км; «тихо / людно» — по числу наблюдателей относительно остальных мест в списке). Прогноз: <a href="https://open-meteo.com/" target="_blank">Open-Meteo.com</a> (CC BY 4.0).</div>
+  </section>
+
+  <!-- ВИДЫ -->
+  <section id="tab-species" class="hidden">
+    <div class="toolbar">
+      <select id="sp-state">
+        <option value="todo">Не разобрано</option>
+        <option value="confirmed">Подтверждено</option>
+        <option value="rejected">«Не то»</option>
+        <option value="none">Без вида</option>
+        <option value="all">Все</option>
+      </select>
+      <select id="sp-day"><option value="">Все дни</option></select>
+      <select id="sp-loc"><option value="">Все места</option></select>
+      <select id="sp-conf">
+        <option value="">Любая уверенность</option>
+        <option value="high">Уверенно (≥ 0.9)</option>
+        <option value="mid">Сомнительно (0.5–0.9)</option>
+        <option value="low">Неуверенно (&lt; 0.5)</option>
+      </select>
+      <select id="sp-kind">
+        <option value="crop">Животное найдено</option>
+        <option value="full">Весь кадр (животное не найдено)</option>
+        <option value="">Все кадры</option>
+      </select>
+      <select id="sp-group">
+        <option value="">Все группы</option>
+        <option value="birds">Птицы</option>
+        <option value="mammals">Млекопитающие</option>
+        <option value="herps">Земноводные и рептилии</option>
+        <option value="insects">Насекомые</option>
+        <option value="plants">Растения</option>
+        <option value="fungi">Грибы</option>
+        <option value="other">Прочее</option>
+      </select>
+      <span class="sp-combo">
+        <input type="search" id="sp-sp-q" placeholder="Вид: все" autocomplete="off">
+        <input type="hidden" id="sp-species">
+        <div class="sp-combo-list hidden" id="sp-sp-list"></div>
+      </span>
+      <button class="link" id="sp-reset">сбросить</button>
+    </div>
+    <div class="toolbar">
+      <span class="muted">Массово:</span>
+      <label title="Серии, где у всех кадров один и тот же топ-1 не ниже порога">подтвердить серии с топ-1 ≥
+        <input type="number" id="sp-thr" min="0.5" max="1" step="0.01" value="0.90" style="width:64px"></label>
+      <button class="btn ghost small" id="sp-bulk">Показать</button>
+      <button class="btn ghost small" id="sp-none-day" title="Все неразобранные «целые кадры» выбранного дня — без вида">Без вида — весь день</button>
+    </div>
+    <div class="summary" id="sp-summary"></div>
+    <div class="sp-keys">
+      <span><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> подтвердить</span><span><kbd>X</kbd> не то</span><span><kbd>0</kbd> без вида</span>
+      <span><kbd>/</kbd> найти вид</span><span><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd> по карточкам</span>
+      <span><kbd>Пробел</kbd> крупно</span><span><kbd>E</kbd> развернуть серию</span><span><kbd>Z</kbd> отменить</span>
+    </div>
+    <div class="sp-grid" id="sp-grid"></div>
+    <div class="sp-more" id="sp-more"></div>
   </section>
 
   <!-- КАРТА -->
@@ -1611,10 +1733,494 @@ function renderDayPanel() {
   }));
 }
 
+// --- ВИДЫ --------------------------------------------------------------------
+// Серия — кадры одного дня с разницей в несколько секунд: решение по серии
+// применяется ко всем её кадрам без решения (или ко всем, если решены все).
+const SP_FILTERS = ["sp-state", "sp-day", "sp-loc", "sp-conf", "sp-kind"];   // запрос к серверу
+const SP_LOCAL = ["sp-group", "sp-species"];                                  // поверх загруженного
+const SP_GROUP_RU = { birds: "птицы", mammals: "млекопитающие", herps: "земноводные и рептилии", insects: "насекомые",
+                      plants: "растения", fungi: "грибы", other: "прочее" };
+const SP_PAGE = 60;
+let sp = { series: [], cards: [], shown: 0, sel: 0, loaded: false, undo: [], expanded: new Set(), box: null };
+
+const spName = t => t ? (t.ru || t.en || t.sci || "") : "";
+const spConf = s => `<i class="${s >= 0.9 ? "hi" : s < 0.5 ? "lo" : ""}">${s.toFixed(2)}</i>`;
+
+async function loadSpeciesMeta() {
+  const m = await api("/api/species/meta");
+  const dsel = $("#sp-day"), lsel = $("#sp-loc"), dv = dsel.value, lv = lsel.value;
+  dsel.innerHTML = `<option value="">Все дни</option>` + m.days.map(d =>
+    `<option value="${d.date}">${dmy(d.date)}${d.places ? " · " + esc(d.places) : ""} — ${d.todo ? `${d.todo} не разобр.` : "разобрано"}</option>`).join("");
+  lsel.innerHTML = `<option value="">Все места</option>` + m.locations.map(l =>
+    `<option value="${l.id}">${esc(l.name)} (${l.n})</option>`).join("");
+  dsel.value = dv; lsel.value = lv;
+  const saved = store.get("species-filters-v2", {});
+  for (const id of ["sp-day", "sp-loc"]) if (saved[id] && !$("#" + id).value) $("#" + id).value = saved[id];
+}
+
+async function loadSpecies(keepSel = false) {
+  const f = readFilters(SP_FILTERS);
+  spSaveFilters();
+  const q = new URLSearchParams({ state: f["sp-state"] || "todo" });
+  if (f["sp-day"]) q.set("day", f["sp-day"]);
+  if (f["sp-loc"]) q.set("loc", f["sp-loc"]);
+  if (f["sp-conf"]) q.set("conf", f["sp-conf"]);
+  if (f["sp-kind"]) q.set("kind", f["sp-kind"]);
+  const r = await api("/api/species/items?" + q);
+  sp.all = r.series;
+  sp.counts = r.counts;
+  sp.frames = r.frames;
+  sp.loaded = true;
+  if (!keepSel) { sp.sel = 0; sp.shown = 0; }
+  $("#nav-species").textContent = r.counts.todo || "";
+  spApplyLocal(keepSel);
+}
+
+function spSaveFilters() { store.set("species-filters-v2", readFilters([...SP_FILTERS, ...SP_LOCAL])); }
+
+// Группа и вид: для «не разобрано» — по топ-1, для «подтверждено» — по подтверждённому виду (s.key)
+function spInGroup(s) { const g = $("#sp-group").value; return !g || s.key?.group === g; }
+function spApplyLocal(keepSel = false) {
+  const sci = $("#sp-species").value;
+  sp.series = sp.all.filter(s => spInGroup(s) && (!sci || s.key?.sci === sci));
+  if (!keepSel) { sp.sel = 0; sp.shown = 0; }
+  const c = sp.counts, g = $("#sp-group").value;
+  const scope = [g && SP_GROUP_RU[g], sci && ($("#sp-sp-q").value || sci)].filter(Boolean).join(" · ");
+  $("#sp-summary").innerHTML = sp.frames ?
+    `Серий в списке: <b>${sp.series.length}</b>${scope ? ` (${esc(scope)})` : ""} · всего серий: не разобрано <b>${c.todo}</b>, подтверждено <b>${c.confirmed}</b>, «не то» <b>${c.rejected}</b>, без вида <b>${c.none}</b> · кадров распознано ${sp.frames}` :
+    `Распознавание ещё не запускалось: <code>python -m app.species run</code>`;
+  $("#sp-sp-q").classList.toggle("on", !!sci);
+  buildCards();
+  renderSpecies();
+}
+
+// Список видов текущей выборки (статус, день, место, группа) с числом серий
+function spSpeciesOptions() {
+  const m = new Map();
+  for (const s of sp.all || []) {
+    if (!s.key?.sci || !spInGroup(s)) continue;
+    const o = m.get(s.key.sci) || { sci: s.key.sci, ru: s.key.ru, n: 0 };
+    o.n++; m.set(s.key.sci, o);
+  }
+  return [...m.values()].sort((a, b) => b.n - a.n || (a.ru || a.sci).localeCompare(b.ru || b.sci, "ru"));
+}
+function spComboDraw() {
+  const q = norm($("#sp-sp-q").value.trim()), cur = $("#sp-species").value;
+  const curLabel = cur && norm($("#sp-sp-q").value) === norm(spComboLabel(cur));
+  const opts = spSpeciesOptions().filter(o => !q || curLabel || norm(o.ru).includes(q) || norm(o.sci).includes(q));
+  $("#sp-sp-list").innerHTML = `<button data-sci="">Все виды</button>` + (opts.map(o =>
+    `<button data-sci="${esc(o.sci)}" class="${o.sci === cur ? "on" : ""}"><span>${esc(o.ru || o.sci)}${o.ru ? ` <small>${esc(o.sci)}</small>` : ""}</span><i>${o.n}</i></button>`).join("")
+    || `<div class="empty">Нет видов в выборке</div>`);
+  $("#sp-sp-list").classList.remove("hidden");
+}
+function spComboLabel(sci) {
+  const o = spSpeciesOptions().find(o => o.sci === sci) || (sp.all || []).map(s => s.key).find(k => k?.sci === sci);
+  return o ? (o.ru || o.sci) : sci;
+}
+function spComboSet(sci) {
+  $("#sp-species").value = sci;
+  $("#sp-sp-q").value = sci ? spComboLabel(sci) : "";
+  $("#sp-sp-list").classList.add("hidden");
+  spSaveFilters();
+  spApplyLocal();
+}
+$("#sp-sp-q").addEventListener("focus", () => { $("#sp-sp-q").select(); spComboDraw(); });
+$("#sp-sp-q").addEventListener("input", () => { if (!$("#sp-sp-q").value) spComboSet(""); else spComboDraw(); });
+$("#sp-sp-q").addEventListener("keydown", e => {
+  if (e.key === "Escape") { $("#sp-sp-list").classList.add("hidden"); $("#sp-sp-q").blur(); }
+  if (e.key === "Enter") { e.preventDefault(); const b = $("#sp-sp-list button[data-sci]:not([data-sci=''])"); if (b) spComboSet(b.dataset.sci); }
+});
+$("#sp-sp-list").addEventListener("mousedown", e => {
+  const b = e.target.closest("button[data-sci]");
+  if (b) { e.preventDefault(); spComboSet(b.dataset.sci); }
+});
+$("#sp-sp-q").addEventListener("blur", () => setTimeout(() => {
+  $("#sp-sp-list").classList.add("hidden");
+  const cur = $("#sp-species").value;
+  $("#sp-sp-q").value = cur ? spComboLabel(cur) : "";
+}, 150));
+$("#sp-group").addEventListener("change", () => {
+  // вид не из выбранной группы — сбросить
+  const cur = $("#sp-species").value;
+  if (cur && !spSpeciesOptions().some(o => o.sci === cur)) { $("#sp-species").value = ""; $("#sp-sp-q").value = ""; }
+  spSaveFilters();
+  spApplyLocal();
+});
+
+// Карточки: серия целиком или, если развернута, её кадры по отдельности
+function buildCards() {
+  sp.cards = [];
+  for (const s of sp.series) {
+    if (s.n > 1 && sp.expanded.has(s.id)) {
+      s.frames.forEach((fr, k) => sp.cards.push({
+        key: "f" + fr.id, series: s, ids: [fr.id], rep: fr.id, n: 1, frameNo: k + 1,
+        top: fr.top, kind: fr.kind, time: fr.time,
+        suggest: !(fr.kind === "full" && (fr.top[0]?.score ?? 0) < 0.5),
+        state: fr.decision ? fr.decision.status : "todo", decision: fr.decision,
+      }));
+    } else {
+      sp.cards.push({ key: "s" + s.id, series: s, ids: s.frames.map(fr => fr.id), rep: s.rep, n: s.n,
+                      top: s.top, kind: s.kind, time: s.time, suggest: s.suggest, state: s.state,
+                      decision: s.decision, mixed: s.mixed_decisions });
+    }
+  }
+  sp.sel = Math.min(sp.sel, Math.max(0, sp.cards.length - 1));
+}
+
+function spCardHtml(c, i) {
+  const s = c.series;
+  const top = c.suggest ? `<div class="sp-top">${c.top.map((t, k) => `
+      <button data-k="${k + 1}" class="${c.decision?.sci === t.sci && c.decision?.status === "confirmed" ? "on" : ""}"
+              title="${esc(t.sci || "")}${t.en && t.en !== t.ru ? " · " + esc(t.en) : ""}">
+        <kbd>${k + 1}</kbd><span class="nm">${esc(spName(t))}${spName(t) !== t.sci ? `<small>${esc(t.sci)}</small>` : ""}</span>${spConf(t.score)}
+      </button>`).join("")}</div>`
+    : `<div class="sp-none">Животное не найдено, подсказки неуверенные — выбери вид поиском или отметь «не то».</div>`;
+  const dec = c.decision ? (c.decision.status === "confirmed"
+      ? `<div class="sp-dec ok">✓ ${esc(c.decision.ru || c.decision.sci)}</div>`
+      : c.decision.status === "none" ? `<div class="sp-dec">— без вида</div>` : `<div class="sp-dec no">✗ не то</div>`)
+    : c.mixed ? `<div class="sp-dec">в серии разные виды</div>` : "";
+  return `<div class="sp-card ${c.kind === "full" ? "full" : ""} ${c.state} ${i === sp.sel ? "sel" : ""}" data-i="${i}">
+    <div class="sp-img"><img loading="lazy" src="/api/species/crop/${c.rep}" alt="">
+      ${c.n > 1 ? `<span class="badge n" title="Серия: ${c.n} кадров подряд. E — развернуть">×${c.n}</span>` : ""}
+      ${c.kind === "full" ? `<span class="badge kind">весь кадр</span>` : ""}</div>
+    <div class="sp-body">
+      <div class="sp-when"><button class="daylink" data-day="${s.day_id}">${dmy(s.date)}</button>
+        <span>${c.time}${s.places.length ? " · " + esc(s.places.join(", ")) : ""}</span></div>
+      ${c.frameNo ? `<div class="sp-frame-of">кадр ${c.frameNo} из ${s.n}</div>` : ""}
+      ${top}${dec}
+      <div class="sp-act">
+        <button class="link" data-act="x">не то</button>
+        <button class="link" data-act="none">без вида</button>
+        <button class="link" data-act="search">найти вид</button>
+        ${s.n > 1 ? `<button class="link" data-act="expand">${sp.expanded.has(s.id) ? "свернуть серию" : "развернуть серию"}</button>` : ""}
+        ${c.decision ? `<button class="link" data-act="clear">сбросить</button>` : ""}
+      </div>
+      <div class="sp-search hidden"><input type="search" placeholder="Название по-русски или латыни"><div class="results"></div></div>
+    </div></div>`;
+}
+
+function renderSpecies() {
+  const grid = $("#sp-grid");
+  sp.shown = Math.min(sp.cards.length, Math.max(sp.shown, SP_PAGE, sp.sel + 1));
+  grid.innerHTML = sp.cards.slice(0, sp.shown).map(spCardHtml).join("") ||
+    `<div class="empty">${sp.loaded ? "Здесь пусто — поменяй фильтры." : ""}</div>`;
+  $("#sp-more").textContent = sp.shown < sp.cards.length ? `Показано ${sp.shown} из ${sp.cards.length} — листай вниз` : "";
+}
+
+function spMore() {
+  if (sp.shown >= sp.cards.length) return;
+  const grid = $("#sp-grid"), from = sp.shown;
+  sp.shown = Math.min(sp.cards.length, sp.shown + SP_PAGE);
+  grid.insertAdjacentHTML("beforeend", sp.cards.slice(from, sp.shown).map((c, k) => spCardHtml(c, from + k)).join(""));
+  $("#sp-more").textContent = sp.shown < sp.cards.length ? `Показано ${sp.shown} из ${sp.cards.length} — листай вниз` : "";
+}
+new IntersectionObserver(es => { if (es[0].isIntersecting) spMore(); }, { rootMargin: "600px" }).observe($("#sp-more"));
+
+function spSelect(i, scroll = true) {
+  if (!sp.cards.length) return;
+  i = Math.max(0, Math.min(sp.cards.length - 1, i));
+  while (i >= sp.shown) spMore();
+  document.querySelector(".sp-card.sel")?.classList.remove("sel");
+  sp.sel = i;
+  const el = document.querySelector(`.sp-card[data-i="${i}"]`);
+  el?.classList.add("sel");
+  if (scroll) el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+// Кадры, к которым применяется решение по карточке
+function spTargets(c) {
+  if (c.frameNo) return c.ids;
+  const open = c.series.frames.filter(fr => !fr.decision).map(fr => fr.id);
+  return open.length ? open : c.ids;
+}
+
+async function spDecide(i, action, t = null, source = null) {
+  const c = sp.cards[i];
+  if (!c) return;
+  const ids = spTargets(c);
+  const body = { ids, action, source: source || (c.n > 1 ? "series" : null) };
+  if (t) Object.assign(body, { sci: t.sci, ru: t.ru, inat_id: t.inat_id ?? null });
+  try {
+    const r = await api("/api/species/decide", { method: "POST", body: JSON.stringify(body) });
+    sp.undo.push(r.undo);
+    if (sp.undo.length > 50) sp.undo.shift();
+    // локально: решение по кадрам, пересчёт состояния серии
+    const dec = action === "clear" ? null :
+      { status: { confirm: "confirmed", reject: "rejected", none: "none" }[action], sci: t?.sci ?? null, ru: t?.ru ?? null, source: body.source };
+    for (const fr of c.series.frames) if (ids.includes(fr.id)) fr.decision = dec;
+    spRecount(c.series);
+    const state = readFilters(SP_FILTERS)["sp-state"];
+    const what = { confirm: `✓ ${t?.ru || t?.sci}`, reject: "✗ не то", none: "— без вида", clear: "решение сброшено" }[action];
+    status(`${what}${ids.length > 1 ? ` · ${ids.length} ${plural(ids.length, "кадр", "кадра", "кадров")}` : ""} — Z отменит`);
+    const keep = state === "all" || c.series.state === state;
+    if (!keep) { sp.series = sp.series.filter(s => s !== c.series); sp.all = sp.all.filter(s => s !== c.series); }
+    const next = keep ? i + 1 : i;
+    buildCards();
+    renderSpecies();
+    spSelect(next);
+    loadSpeciesMeta().catch(() => {});
+  } catch (err) { status("Ошибка: " + err.message, 6000); }
+}
+
+function spRecount(s) {
+  const dec = s.frames.map(fr => fr.decision).filter(Boolean);
+  const old = s.state;
+  s.state = dec.length < s.frames.length ? "todo" : dec.some(d => d.status === "confirmed") ? "confirmed"
+    : dec.every(d => d.status === "none") ? "none" : "rejected";
+  const kinds = new Set(dec.filter(d => d.status === "confirmed").map(d => d.sci + "|" + d.ru));
+  s.decision = dec.length === s.frames.length && kinds.size <= 1 ? dec[0] : null;
+  s.mixed_decisions = kinds.size > 1;
+  // вид серии для фильтров: подтверждённый, иначе топ-1
+  const conf = dec.find(d => d.status === "confirmed");
+  s.key = s.state === "confirmed" && conf
+    ? { sci: conf.sci || conf.ru, ru: conf.ru, group: (conf.sci === s.top[0]?.sci ? s.top[0].group : s.key?.group) || "other" }
+    : s.top[0] ? { sci: s.top[0].sci, ru: s.top[0].ru, group: s.top[0].group } : null;
+  if (sp.counts && old !== s.state) {
+    sp.counts[old]--; sp.counts[s.state]++;
+    $("#nav-species").textContent = sp.counts.todo || "";
+  }
+}
+
+async function spUndo() {
+  const u = sp.undo.pop();
+  if (!u) { status("Отменять нечего"); return; }
+  try {
+    await api("/api/species/undo", { method: "POST", body: JSON.stringify(u) });
+    status("Отменено");
+    await loadSpecies(true);
+    loadSpeciesMeta().catch(() => {});
+  } catch (err) { status("Ошибка: " + err.message, 6000); }
+}
+
+function spOpenSearch(i) {
+  spSelect(i, false);
+  const card = document.querySelector(`.sp-card[data-i="${i}"]`);
+  if (!card) return;
+  const box = card.querySelector(".sp-search");
+  box.classList.remove("hidden");
+  const inp = box.querySelector("input");
+  inp.focus();
+  let timer, found = [];
+  const res = box.querySelector(".results");
+  const draw = () => {
+    const q = inp.value.trim();
+    res.innerHTML = found.map((t, k) => `<button data-k="${k}" class="${k === 0 ? "on" : ""}">
+        ${esc(t.ru || t.en || t.sci)} <small>${esc(t.sci)}${t.obs != null ? ` · ${t.obs} набл.` : ""}</small>
+        ${t.rare ? `<span class="rare">редкий</span>` : ""}</button>`).join("")
+      + (q.length >= 3 ? `<button data-own="1"><small>записать как есть:</small> «${esc(q)}»</button>` : "");
+  };
+  inp.oninput = () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      found = inp.value.trim().length >= 2 ? await api("/api/species/search?q=" + encodeURIComponent(inp.value.trim())) : [];
+      draw();
+    }, 180);
+  };
+  const choose = t => spDecide(i, "confirm", t, "search");
+  const own = () => {
+    const q = inp.value.trim();
+    choose(/^[A-Za-z]/.test(q) ? { sci: q, ru: null } : { sci: null, ru: q });
+  };
+  res.onclick = e => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    b.dataset.own ? own() : choose(found[+b.dataset.k]);
+  };
+  inp.onkeydown = e => {
+    if (e.key === "Escape") { box.classList.add("hidden"); inp.blur(); e.stopPropagation(); }
+    if (e.key === "Enter") { e.preventDefault(); found.length ? choose(found[0]) : inp.value.trim().length >= 3 && own(); }
+  };
+}
+
+function spToggleSeries(i) {
+  const c = sp.cards[i];
+  if (!c || c.series.n < 2) return;
+  const id = c.series.id;
+  sp.expanded.has(id) ? sp.expanded.delete(id) : sp.expanded.add(id);
+  buildCards();
+  renderSpecies();
+  spSelect(sp.cards.findIndex(x => x.series.id === id));
+}
+
+// Крупный просмотр: стрелки — по кадрам серии
+function spShowBig(i) {
+  const c = sp.cards[i];
+  if (!c) return;
+  const frames = c.frameNo ? [c.series.frames[c.frameNo - 1]] : c.series.frames;
+  let k = Math.max(0, frames.findIndex(fr => fr.id === c.rep));
+  let el = $("#sp-box");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "sp-box";
+    el.addEventListener("click", () => spCloseBig());
+    document.body.appendChild(el);
+  }
+  const draw = () => {
+    const fr = frames[k];
+    el.innerHTML = `<img src="/api/species/frame/${fr.id}" alt="">
+      <div class="cap">${dmy(c.series.date)} ${fr.time}${frames.length > 1 ? ` · кадр ${k + 1} из ${frames.length} (← →)` : ""}
+      · 1/2/3, X — решение · Esc — закрыть</div>`;
+  };
+  sp.box = { step: d => { k = (k + d + frames.length) % frames.length; draw(); } };
+  draw();
+}
+function spCloseBig() { $("#sp-box")?.remove(); sp.box = null; }
+
+$("#sp-grid").addEventListener("click", e => {
+  const card = e.target.closest(".sp-card");
+  if (!card || e.target.closest(".sp-search")) return;
+  const i = +card.dataset.i, c = sp.cards[i];
+  const day = e.target.closest("[data-day]");
+  if (day) { openDay(+day.dataset.day); return; }
+  const k = e.target.closest("[data-k]");
+  if (k) { spDecide(i, "confirm", c.top[+k.dataset.k - 1], "top" + k.dataset.k); return; }
+  const act = e.target.closest("[data-act]")?.dataset.act;
+  if (act === "x") return spDecide(i, "reject");
+  if (act === "none") return spDecide(i, "none");
+  if (act === "clear") return spDecide(i, "clear");
+  if (act === "search") return spOpenSearch(i);
+  if (act === "expand" || e.target.closest(".badge.n")) return spToggleSeries(i);
+  if (e.target.closest(".sp-img")) { spSelect(i, false); return spShowBig(i); }
+  spSelect(i, false);
+});
+
+document.addEventListener("keydown", e => {
+  if ($("#tab-species").classList.contains("hidden")) return;
+  if ($("#sp-bulk-box")) { if (e.key === "Escape") $("#sp-bulk-box").remove(); return; }
+  if (e.target.matches("input, textarea, select") || e.ctrlKey && e.key !== "z" || e.metaKey || e.altKey) return;
+  const c = sp.cards[sp.sel];
+  const cols = () => {
+    const cards = [...document.querySelectorAll(".sp-card")];
+    const top0 = cards[0]?.offsetTop;
+    return Math.max(1, cards.findIndex(x => x.offsetTop !== top0) === -1 ? cards.length : cards.findIndex(x => x.offsetTop !== top0));
+  };
+  const key = e.key.toLowerCase();
+  let done = true;
+  if (sp.box && (key === "arrowleft" || key === "arrowright")) sp.box.step(key === "arrowleft" ? -1 : 1);
+  else if (key === "escape") spCloseBig();
+  else if (["1", "2", "3"].includes(key)) {
+    if (c?.suggest && c.top[+key - 1]) { spCloseBig(); spDecide(sp.sel, "confirm", c.top[+key - 1], "top" + key); }
+  }
+  else if (key === "x" || key === "ч") { spCloseBig(); spDecide(sp.sel, "reject"); }
+  else if (key === "0") { spCloseBig(); spDecide(sp.sel, "none"); }
+  else if (key === "/" || key === "." && e.code === "Slash") { spCloseBig(); spOpenSearch(sp.sel); }
+  else if (key === "z" || key === "я") spUndo();
+  else if (key === "e" || key === "у") spToggleSeries(sp.sel);
+  else if (key === " " || key === "enter") sp.box ? spCloseBig() : spShowBig(sp.sel);
+  else if (key === "arrowright") spSelect(sp.sel + 1);
+  else if (key === "arrowleft") spSelect(sp.sel - 1);
+  else if (key === "arrowdown") spSelect(sp.sel + cols());
+  else if (key === "arrowup") spSelect(sp.sel - cols());
+  else done = false;
+  if (done) e.preventDefault();
+});
+
+for (const id of SP_FILTERS) $("#" + id).addEventListener("change", () => loadSpecies().catch(err => status("Ошибка: " + err.message, 6000)));
+$("#sp-reset").addEventListener("click", () => {
+  for (const id of [...SP_FILTERS, ...SP_LOCAL]) $("#" + id).value = id === "sp-state" ? "todo" : id === "sp-kind" ? "crop" : "";
+  $("#sp-sp-q").value = "";
+  loadSpecies();
+});
+
+// --- массовые решения -------------------------------------------------------
+function spScope() {
+  const sci = $("#sp-species").value, g = $("#sp-group").value;
+  return sci ? ` «${esc($("#sp-sp-q").value || sci)}»` : g ? ` (${SP_GROUP_RU[g]})` : "";
+}
+async function spBatch(action, items, what) {
+  const r = await api("/api/species/decide-batch", { method: "POST", body: JSON.stringify({ action, items }) });
+  sp.undo.push(r.undo);
+  status(`${what}: ${r.series} ${plural(r.series, "серия", "серии", "серий")}, ${r.n} ${plural(r.n, "кадр", "кадра", "кадров")} — Z отменит`, 6000);
+  await loadSpecies(true);
+  loadSpeciesMeta().catch(() => {});
+}
+
+function spBulkPreview() {
+  const thr = Math.min(1, Math.max(0.5, parseFloat($("#sp-thr").value) || 0.9));
+  store.set("species-thr", thr.toFixed(2));
+  const cand = sp.series.filter(s => s.state === "todo" && s.suggest && s.uniform && s.top[0] && s.top[0].score >= thr);
+  if (!cand.length) { status(`Нет неразобранных серий${spScope()} с топ-1 ≥ ${thr.toFixed(2)} — проверь фильтры (статус «Не разобрано»)`, 5000); return; }
+  const el = document.createElement("div");
+  el.id = "sp-bulk-box";
+  const nFrames = () => cand.filter((s, k) => el.querySelector(`input[data-k="${k}"]`).checked)
+                            .reduce((a, s) => a + s.frames.filter(fr => !fr.decision).length, 0);
+  el.innerHTML = `<div class="sp-bulk-panel">
+    <div class="row" style="justify-content:space-between">
+      <b>Подтвердить ${cand.length} ${plural(cand.length, "серию", "серии", "серий")}${spScope()} с топ-1 ≥ ${thr.toFixed(2)}</b>
+      <span class="hint">Сними галочки с тех, где модель ошиблась. В пределах текущих фильтров.</span>
+    </div>
+    <div class="sp-bulk-grid">${cand.map((s, k) => `<label class="sp-bulk-item">
+      <input type="checkbox" data-k="${k}" checked>
+      <img loading="lazy" src="/api/species/crop/${s.rep}" alt="">
+      <span><b>${esc(spName(s.top[0]))}</b> ${spConf(s.top[0].score)}${s.n > 1 ? ` · ×${s.n}` : ""}<br>
+      <small class="muted">${dmy(s.date)} ${s.time}</small></span></label>`).join("")}</div>
+    <div class="row">
+      <button class="btn" id="sp-bulk-go"></button>
+      <button class="btn ghost" id="sp-bulk-cancel">Отмена</button>
+      <button class="link" id="sp-bulk-all">снять все</button>
+    </div></div>`;
+  document.body.appendChild(el);
+  const upd = () => {
+    const n = el.querySelectorAll("input:checked").length;
+    $("#sp-bulk-go").textContent = `Подтвердить ${n} ${plural(n, "серию", "серии", "серий")} (${nFrames()} ${plural(nFrames(), "кадр", "кадра", "кадров")})`;
+    $("#sp-bulk-go").disabled = !n;
+  };
+  el.addEventListener("change", upd);
+  upd();
+  const close = () => el.remove();
+  $("#sp-bulk-cancel").onclick = close;
+  el.addEventListener("click", e => { if (e.target === el) close(); });
+  $("#sp-bulk-all").onclick = () => {
+    const on = !el.querySelector("input:checked");
+    el.querySelectorAll("input[type=checkbox]").forEach(x => x.checked = on);
+    $("#sp-bulk-all").textContent = on ? "снять все" : "отметить все";
+    upd();
+  };
+  $("#sp-bulk-go").onclick = async () => {
+    const items = cand.filter((s, k) => el.querySelector(`input[data-k="${k}"]`).checked).map(s => ({
+      ids: s.frames.filter(fr => !fr.decision).map(fr => fr.id),
+      sci: s.top[0].sci, ru: s.top[0].ru, inat_id: s.top[0].inat_id ?? null }));
+    close();
+    try { await spBatch("confirm", items, "Подтверждено"); }
+    catch (err) { status("Ошибка: " + err.message, 6000); }
+  };
+}
+$("#sp-bulk").addEventListener("click", spBulkPreview);
+
+$("#sp-none-day").addEventListener("click", async () => {
+  const f = readFilters(SP_FILTERS);
+  if (!f["sp-day"]) { status("Сначала выбери день в фильтре"); return; }
+  if (f["sp-kind"] !== "full") {
+    $("#sp-kind").value = "full"; $("#sp-state").value = "todo";
+    await loadSpecies();
+    status("Это «целые кадры» дня. Посмотри и нажми «Без вида — весь день» ещё раз", 6000);
+    return;
+  }
+  const todo = sp.series.filter(s => s.state === "todo" && s.kind === "full");
+  if (!todo.length) { status("Неразобранных «целых кадров» в этот день нет"); return; }
+  const n = todo.reduce((a, s) => a + s.frames.filter(fr => !fr.decision).length, 0);
+  if (!confirm(`${dmy(f["sp-day"])}${spScope().replace(/&quot;/g, '"')}: отметить «без вида» ${todo.length} ${plural(todo.length, "серию", "серии", "серий")} (${n} ${plural(n, "кадр", "кадра", "кадров")})? Z — отменить.`)) return;
+  try {
+    await spBatch("none", todo.map(s => ({ ids: s.frames.filter(fr => !fr.decision).map(fr => fr.id) })), "Без вида");
+  } catch (err) { status("Ошибка: " + err.message, 6000); }
+});
+
+async function openSpeciesTab() {
+  if (sp.loaded) return;
+  restoreFilters([...SP_FILTERS, ...SP_LOCAL], "species-filters-v2");
+  try { $("#sp-thr").value = store.get("species-thr", "0.90"); } catch {}
+  try {
+    await loadSpeciesMeta(); await loadSpecies();
+    if ($("#sp-species").value) { $("#sp-sp-q").value = spComboLabel($("#sp-species").value); spApplyLocal(); }
+  }
+  catch (err) { status("Ошибка: " + err.message, 8000); }
+}
+
 function showTab(tab) {
   document.querySelectorAll("nav button").forEach(x => x.classList.toggle("active", x.dataset.tab === tab));
-  for (const t of ["days", "locations", "map", "plan"]) $("#tab-" + t).classList.toggle("hidden", tab !== t);
+  for (const t of ["days", "locations", "map", "plan", "species"]) $("#tab-" + t).classList.toggle("hidden", tab !== t);
   if (tab === "plan" && !planLoaded) loadPlan();
+  if (tab === "species") openSpeciesTab();
   document.querySelector("main").classList.toggle("wide", tab === "map");
   store.set("tab", tab);
   if (tab === "map") { initMap(); setTimeout(() => map.invalidateSize(), 0); }

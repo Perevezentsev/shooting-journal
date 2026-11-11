@@ -88,6 +88,34 @@ CREATE TABLE IF NOT EXISTS species_preds (
     PRIMARY KEY (image_id, rank)
 );
 CREATE INDEX IF NOT EXISTS idx_species_preds_sci ON species_preds(scientific);
+-- Виды региона (все, и редкие): поиск при подтверждении и русские подписи.
+CREATE TABLE IF NOT EXISTS species_names (
+    scientific  TEXT PRIMARY KEY,              -- «Род вид», как в iNat
+    ru          TEXT,
+    en          TEXT,
+    inat_id     INTEGER,
+    obs         INTEGER,                       -- наблюдений в регионе
+    grp         TEXT                           -- иконическая группа iNat
+);
+-- Решения Алексея. Отдельно от species_preds: rescore их не трогает.
+CREATE TABLE IF NOT EXISTS species_confirm (
+    image_id     INTEGER PRIMARY KEY,          -- photos.image_id
+    status       TEXT NOT NULL,                -- confirmed | rejected («не то»)
+    scientific   TEXT,                         -- для confirmed
+    name_ru      TEXT,
+    inat_id      INTEGER,
+    day_id       INTEGER,                      -- день и место — на момент подтверждения
+    location_id  INTEGER,
+    source       TEXT,                         -- top1..top3 | search | series
+    confirmed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_species_confirm_sci ON species_confirm(scientific);
+-- Имя TreeOfLife → имя iNat, когда они разошлись (Emberiza schoeniclus → Schoeniclus schoeniclus).
+CREATE TABLE IF NOT EXISTS species_alias (
+    tol_sci     TEXT PRIMARY KEY,
+    scientific  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_species_confirm_day ON species_confirm(day_id);
 """
 
 
@@ -202,10 +230,11 @@ class Scorer:
     keep — индексы видов TreeOfLife (региональный список), None — все."""
 
     def __init__(self, labels: TolLabels, device: str, scale: float = 100.0,
-                 keep=None, log_prior=None):
+                 keep=None, log_prior=None, exemplars: "Exemplars | None" = None):
         import numpy as np
         import torch
         self.labels, self.device, self.scale = labels, device, scale
+        self.ex = exemplars
         txt = labels.txt_emb()
         self.keep = None if keep is None else np.asarray(keep, dtype=np.int64)
         if self.keep is not None:
@@ -215,19 +244,82 @@ class Scorer:
         self.log_prior = None if log_prior is None else \
             torch.as_tensor(log_prior, dtype=torch.float32, device=device)
 
-    def topk(self, emb, k: int = TOP_K) -> list[list[tuple[int, float]]]:
-        """emb: (N, 768) нормированные, numpy. → [[(tol_idx, prob), ...], ...]"""
+    def topk(self, emb, k: int = TOP_K, ids=None, days=None) -> list[list[tuple[int, float]]]:
+        """emb: (N, 768) нормированные, numpy. → [[(tol_idx, prob), ...], ...]
+        ids — image_id кадров: кадр не служит образцом сам себе; days — исключить образцы
+        того же дня (для проверки качества)."""
         import torch
         with torch.no_grad():
             e = torch.as_tensor(emb, device=self.device).to(self.txt.dtype)
             logits = (e @ self.txt).float() * self.scale
             if self.log_prior is not None:
                 logits += self.log_prior
+            if self.ex is not None:
+                # образцы только переставляют виды из текстовой пятёрки, а не тянут чужие:
+                # иначе белый беляк уходит в подтверждённого лебедя, выдра — в тюленя
+                cand = torch.zeros_like(logits, dtype=torch.bool)
+                cand.scatter_(1, logits.topk(min(self.ex.cand, logits.shape[1]), dim=1).indices, True)
+                logits += self.ex.boost(e.float(), logits.shape[1], ids, days) * cand
             v, i = torch.softmax(logits, dim=1).topk(k)
         v, i = v.cpu().numpy(), i.cpu().numpy()
         if self.keep is not None:
             i = self.keep[i]
         return [[(int(a), float(b)) for a, b in zip(ri, rv)] for ri, rv in zip(i, v)]
+
+
+class Exemplars:
+    """Подтверждённые кадры как образцы (по схеме Tip-Adapter): к логиту вида из текстовой
+    пятёрки (cand) прибавляется alpha · среднее по k самым похожим его образцам от exp(−beta·(1 − cos)).
+    beta большое — помогают только по-настоящему похожие кадры, а не «вообще тюлени»."""
+
+    ALPHA, BETA, K, CAND = 5.0, 8.0, 3, 5
+
+    def __init__(self, ids, days, embs, cols, device: str, alpha=ALPHA, beta=BETA, k=K, cand=CAND):
+        import numpy as np
+        import torch
+        self.device, self.alpha, self.beta, self.k, self.cand = device, alpha, beta, k, cand
+        self.ids = torch.as_tensor(np.asarray(ids, dtype=np.int64), device=device)
+        self.days = torch.as_tensor(np.asarray(days, dtype=np.int64), device=device)
+        self.E = torch.as_tensor(np.asarray(embs, dtype=np.float32), device=device)
+        cols = np.asarray(cols, dtype=np.int64)
+        self.groups = [(int(c), torch.as_tensor(np.nonzero(cols == c)[0], device=device))
+                       for c in np.unique(cols)]
+
+    def __len__(self):
+        return len(self.ids)
+
+    def boost(self, e, n_cols: int, ids=None, days=None):
+        import torch
+        A = torch.exp(-self.beta * (1 - e @ self.E.T))            # N × M
+        if ids is not None:
+            A[torch.as_tensor(ids, device=self.device)[:, None] == self.ids[None, :]] = 0
+        if days is not None:
+            A[torch.as_tensor(days, device=self.device)[:, None] == self.days[None, :]] = 0
+        out = torch.zeros(e.shape[0], n_cols, device=self.device)
+        for col, idx in self.groups:
+            a = A[:, idx]
+            out[:, col] = self.alpha * a.topk(min(self.k, a.shape[1]), dim=1).values.mean(dim=1)
+        return out
+
+
+def load_exemplars(conn, keep, confirmed_tol: dict, device: str, **kw) -> "Exemplars | None":
+    """Образцы из species_confirm: эмбеддинги подтверждённых кадров и столбец их вида в Scorer."""
+    import numpy as np
+    if keep is None or not confirmed_tol:
+        return None
+    pos = {int(t): i for i, t in enumerate(keep)}
+    ids, days, embs, cols = [], [], [], []
+    for img, sci, day in conn.execute("SELECT image_id, scientific, day_id FROM species_confirm "
+                                      "WHERE status = 'confirmed' AND scientific IS NOT NULL"):
+        t = confirmed_tol.get(sci)
+        f = EMB_DIR / f"{img}.npy"
+        if t is None or t not in pos or not f.exists():
+            continue
+        ids.append(img); days.append(day or 0); cols.append(pos[t])
+        embs.append(np.load(f).astype(np.float32))
+    if not ids:
+        return None
+    return Exemplars(ids, days, np.stack(embs), cols, device, **kw)
 
 
 class Embedder:
@@ -429,8 +521,9 @@ def run(conn: sqlite3.Connection, cfg: dict, *, all_photos=False, day=None, retr
     conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('species_logit_scale', ?)", (str(emb.scale),))
     conn.commit()                           # не держать транзакцию, пока идёт прогон
     labels = TolLabels()
-    keep, log_prior = region_filter(conn, labels, verbose=True)   # если список уже скачан
-    scorer = Scorer(labels, device, emb.scale, keep, log_prior)
+    confirmed: dict = {}
+    keep, log_prior = region_filter(conn, labels, verbose=True, confirmed_out=confirmed)  # если список скачан
+    scorer = Scorer(labels, device, emb.scale, keep, log_prior, load_exemplars(conn, keep, confirmed, device))
 
     stop = {"flag": False}
     def on_sigint(sig, frm):
@@ -557,34 +650,45 @@ def fetch_region(conn, bbox: list[float], refresh=False) -> dict:
             "quality_grade": "research", "per_page": REGION_PER_PAGE}
     species: dict[str, dict] = {}
     truncated = []
+    # Два прохода: без locale — английские названия (по ним ловим синонимы TreeOfLife),
+    # с locale=ru — русские, для поиска и подписей во вкладке «Виды».
     with httpx.Client(headers=inat.HEADERS) as client:
-        for group in REGION_GROUPS:
-            page, got, total = 1, 0, None
-            while True:
-                data = inat._get(client, "/observations/species_counts",
-                                 {**base, "iconic_taxa": group, "page": page})
-                res = data.get("results") or []
-                total = data.get("total_results", 0)
-                for r in res:
-                    t = r.get("taxon") or {}
-                    if t.get("rank") not in ("species", "subspecies", "variety", "form"):
-                        continue
-                    sci = " ".join(t.get("name", "").split()[:2])
-                    if sci.count(" ") != 1 or "×" in sci:
-                        continue
-                    s = species.setdefault(sci, {"sci": sci, "count": 0, "group": group,
-                                                 "id": t.get("id"),
-                                                 "common": t.get("preferred_common_name")})
-                    s["count"] += r.get("count", 0)
-                got += len(res)
-                print(f"  {group}: {got}/{total}", end="\r", file=sys.stderr, flush=True)
-                if not res or got >= total:
-                    break
-                if page * REGION_PER_PAGE >= REGION_CAP:
-                    truncated.append(f"{group} ({got} из {total})")
-                    break
-                page += 1
-            print(f"  {group}: {got} видов".ljust(40), file=sys.stderr)
+        for locale in (None, "ru"):
+            for group in REGION_GROUPS:
+                page, got, total = 1, 0, None
+                while True:
+                    params = {**base, "iconic_taxa": group, "page": page}
+                    if locale:
+                        params["locale"] = locale
+                    data = inat._get(client, "/observations/species_counts", params)
+                    res = data.get("results") or []
+                    total = data.get("total_results", 0)
+                    for r in res:
+                        t = r.get("taxon") or {}
+                        if t.get("rank") not in ("species", "subspecies", "variety", "form"):
+                            continue
+                        sci = " ".join(t.get("name", "").split()[:2])
+                        if sci.count(" ") != 1 or "×" in sci:
+                            continue
+                        name = t.get("preferred_common_name")
+                        if locale == "ru":
+                            # нет русского — iNat отдаёт английское; такое не берём
+                            if sci in species and name and any("а" <= ch.lower() <= "я" or ch in "ёЁ" for ch in name):
+                                species[sci]["ru"] = name
+                            continue
+                        s = species.setdefault(sci, {"sci": sci, "count": 0, "group": group,
+                                                     "id": t.get("id"), "common": name, "ru": None})
+                        s["count"] += r.get("count", 0)
+                    got += len(res)
+                    print(f"  {group}{' (ru)' if locale else ''}: {got}/{total}", end="\r", file=sys.stderr, flush=True)
+                    if not res or got >= total:
+                        break
+                    if page * REGION_PER_PAGE >= REGION_CAP:
+                        if not locale:
+                            truncated.append(f"{group} ({got} из {total})")
+                        break
+                    page += 1
+                print(f"  {group}{' (ru)' if locale else ''}: {got} видов".ljust(40), file=sys.stderr)
     payload = {"bbox": bbox, "fetched_at": datetime.now().isoformat(timespec="seconds"),
                "truncated": truncated,
                "species": sorted(species.values(), key=lambda s: -s["count"])}
@@ -602,10 +706,71 @@ def _region_cached(conn) -> dict | None:
     return json.loads(row[0]) if row else None
 
 
-def region_filter(conn, labels: TolLabels, prior: float = 0.0, verbose=False):
+REGION_MIN_OBS = 5     # в подсказки — виды хотя бы с 5 наблюдениями в регионе; редкие — через поиск
+REGION_PRIOR = 0.3     # + prior·ln(наблюдений): частый в регионе вид выигрывает у похожего редкого
+
+
+def sync_names(conn) -> int:
+    """species_names из скачанного регионального списка (русские и английские названия)."""
+    reg = _region_cached(conn)
+    if not reg:
+        return 0
+    conn.executemany(
+        "INSERT OR REPLACE INTO species_names(scientific, ru, en, inat_id, obs, grp) VALUES (?,?,?,?,?,?)",
+        [(s["sci"], s.get("ru"), s.get("common"), s.get("id"), s["count"], s["group"]) for s in reg["species"]])
+    conn.commit()
+    return len(reg["species"])
+
+
+def fill_ru_names(conn) -> int:
+    """Русские названия по id таксона для видов, у которых их не было в списке iNat
+    (/taxa/<id,…>?locale=ru, все названия — берём русское). Обновляет и кэш списка."""
+    import httpx
+    from . import inat
+    rows = conn.execute("SELECT scientific, inat_id FROM species_names "
+                        "WHERE ru IS NULL AND inat_id IS NOT NULL").fetchall()
+    if not rows:
+        return 0
+    by_id = {r[1]: r[0] for r in rows}
+    ids = list(by_id)
+    found: dict[str, str] = {}
+    cyr = lambda t: any("а" <= ch.lower() <= "я" or ch in "ёЁ" for ch in t or "")
+    with httpx.Client(headers=inat.HEADERS) as client:
+        for k in range(0, len(ids), 30):
+            part = ids[k:k + 30]
+            data = inat._get(client, "/taxa/" + ",".join(map(str, part)),
+                             {"locale": "ru", "all_names": "true", "per_page": 30})
+            for t in data.get("results") or []:
+                name = t.get("preferred_common_name") if cyr(t.get("preferred_common_name")) else None
+                if not name:
+                    ru = [n for n in t.get("names") or [] if (n.get("locale") == "ru" or
+                          (n.get("lexicon") or "").lower() == "russian") and n.get("is_valid", True)]
+                    name = ru[0]["name"] if ru else None
+                if name and t.get("id") in by_id:
+                    found[by_id[t["id"]]] = name[:1].upper() + name[1:]
+            print(f"  русские названия: {min(k + 30, len(ids))}/{len(ids)}, найдено {len(found)}",
+                  end="\r", file=sys.stderr, flush=True)
+    print(file=sys.stderr)
+    conn.executemany("UPDATE species_names SET ru = ? WHERE scientific = ?", [(v, k) for k, v in found.items()])
+    reg_row = conn.execute("SELECT key, data FROM inat_cache WHERE key LIKE ? ORDER BY fetched_at DESC LIMIT 1",
+                           (f"{REGION_CACHE_KEY}|%",)).fetchone()
+    if reg_row:
+        reg = json.loads(reg_row[1])
+        for sp_ in reg["species"]:
+            if not sp_.get("ru") and sp_["sci"] in found:
+                sp_["ru"] = found[sp_["sci"]]
+        conn.execute("UPDATE inat_cache SET data = ? WHERE key = ?", (json.dumps(reg, ensure_ascii=False), reg_row[0]))
+    conn.commit()
+    return len(found)
+
+
+def region_filter(conn, labels: TolLabels, prior: float = REGION_PRIOR, verbose=False,
+                  min_obs: int = REGION_MIN_OBS, confirmed_out: dict | None = None):
     """(keep, log_prior) для Scorer по сохранённому региональному списку; (None, None) — списка нет.
     Сопоставление по «род вид»: у растений в TreeOfLife к эпитету приписан автор — его отрезаем.
-    prior > 0 — слабая поправка на частоту вида в iNat: + prior·ln(наблюдений)."""
+    prior > 0 — слабая поправка на частоту вида в iNat: + prior·ln(наблюдений).
+    Виды, которые Алексей подтверждал, в списке всегда — даже редкие и не из региона.
+    confirmed_out заполняется {научное имя подтверждения: tol_idx} — для образцов."""
     reg = _region_cached(conn)
     if not reg:
         return None, None
@@ -623,7 +788,12 @@ def region_filter(conn, labels: TolLabels, prior: float = 0.0, verbose=False):
                 by_common.setdefault(common.lower(), []).append(i)
     keep, lp, missed = [], [], []
     synonyms = 0
+    aliases: list[tuple[str, str]] = []
+    rare = 0
     for s in reg["species"]:
+        if s["count"] < min_obs:
+            rare += 1
+            continue
         idx = index.get(s["sci"].lower())
         if not idx:
             # Синонимы: iNat уже перешёл на новые роды (Schoeniclus, Curruca, Astur),
@@ -638,16 +808,43 @@ def region_filter(conn, labels: TolLabels, prior: float = 0.0, verbose=False):
                 missed.append(s)
                 continue
             synonyms += 1
+            aliases += [(labels.describe(i)[0].split(" (")[0], s["sci"]) for i in idx]
         for i in idx:
             keep.append(i)
             lp.append(prior * math.log(max(s["count"], 1)))
     if verbose:
-        print(f"Региональный список: {len(reg['species'])} видов iNat, в TreeOfLife нашлось "
-              f"{len(reg['species']) - len(missed)} (из них {synonyms} — через синонимы), "
-              f"не нашлось {len(missed)}.")
+        print(f"Региональный список: {len(reg['species'])} видов iNat; не реже {min_obs} наблюдений — "
+              f"{len(reg['species']) - rare}, из них в TreeOfLife нашлось "
+              f"{len(reg['species']) - rare - len(missed)} (через синонимы — {synonyms}), "
+              f"не нашлось {len(missed)}. Редкие ({rare}) — только через поиск.")
         if missed:
             print("  Частые из ненайденных: " + ", ".join(
                 f"{s['sci']} ({s['count']})" for s in missed[:12]))
+    conn.executemany("INSERT OR REPLACE INTO species_alias(tol_sci, scientific) VALUES (?, ?)",
+                     [(" ".join(a.split()[:2]), b) for a, b in aliases])
+    conn.commit()
+    # Подтверждённые виды: имя iNat → TreeOfLife (напрямую или через синоним)
+    have = set(keep)
+    rev_alias = {b: a for a, b in conn.execute("SELECT tol_sci, scientific FROM species_alias")}
+    obs = {s["sci"]: s["count"] for s in reg["species"]}
+    added, unknown = [], []
+    for (sci,) in conn.execute("SELECT DISTINCT scientific FROM species_confirm "
+                               "WHERE status = 'confirmed' AND scientific IS NOT NULL"):
+        idx = index.get(sci.lower()) or index.get(rev_alias.get(sci, "").lower())
+        if not idx:
+            unknown.append(sci)
+            continue
+        if confirmed_out is not None:
+            confirmed_out[sci] = idx[0]
+        for i in idx:
+            if i not in have:
+                have.add(i)
+                keep.append(i)
+                lp.append(prior * math.log(max(obs.get(sci, 0), min_obs)))
+                added.append(sci)
+    if verbose and (added or unknown):
+        print(f"  Подтверждённые тобой виды вне подсказок добавлены: {len(set(added))}"
+              + (f"; нет в TreeOfLife (образцами не станут): {', '.join(unknown[:8])}" if unknown else ""))
     if not keep:
         return None, None
     order = sorted(range(len(keep)), key=keep.__getitem__)
@@ -657,7 +854,7 @@ def region_filter(conn, labels: TolLabels, prior: float = 0.0, verbose=False):
 
 
 def rescore(conn: sqlite3.Connection, keep=None, log_prior=None, chunk=4096,
-            region=True, prior=0.0) -> int:
+            region=True, prior=REGION_PRIOR, min_obs=REGION_MIN_OBS, exemplars=True) -> int:
     """Пересчитать species_preds из сохранённых эмбеддингов — превью и модели не нужны.
     region — ограничить видами регионального списка, если он скачан (`region`)."""
     import numpy as np
@@ -666,11 +863,16 @@ def rescore(conn: sqlite3.Connection, keep=None, log_prior=None, chunk=4096,
     conn.execute("PRAGMA busy_timeout = 30000")     # прогон может писать в базу параллельно
     row = conn.execute("SELECT value FROM meta WHERE key = 'species_logit_scale'").fetchone()
     labels = TolLabels()
+    confirmed: dict = {}
     if region and keep is None:
-        keep, log_prior = region_filter(conn, labels, prior, verbose=True)
+        keep, log_prior = region_filter(conn, labels, prior, verbose=True, min_obs=min_obs,
+                                        confirmed_out=confirmed)
         if keep is None:
             print("Регионального списка нет (python -m app.species region) — считаю по всем видам.")
-    scorer = Scorer(labels, device, float(row[0]) if row else 100.0, keep, log_prior)
+    ex = load_exemplars(conn, keep, confirmed, device) if exemplars else None
+    if ex is not None:
+        print(f"  Образцы: {len(ex)} подтверждённых кадров, {len(ex.groups)} видов.")
+    scorer = Scorer(labels, device, float(row[0]) if row else 100.0, keep, log_prior, ex)
     ids = [r[0] for r in conn.execute(
         "SELECT image_id FROM species_crops WHERE model = ? ORDER BY image_id", (EMB_MODEL,))]
     done = 0
@@ -679,7 +881,7 @@ def rescore(conn: sqlite3.Connection, keep=None, log_prior=None, chunk=4096,
         if not part:
             continue
         embs = np.stack([np.load(EMB_DIR / f"{j}.npy").astype(np.float32) for j in part])
-        _write_preds(conn, part, scorer.topk(embs), scorer.labels)
+        _write_preds(conn, part, scorer.topk(embs, ids=part), scorer.labels)
         conn.commit()
         done += len(part)
         print(f"  {done}/{len(ids)}", end="\r", file=sys.stderr, flush=True)
@@ -770,8 +972,11 @@ def main(argv=None):
     s.add_argument("image_id", type=int)
     rs = sub.add_parser("rescore", help="пересчитать топ-5 из эмбеддингов")
     rs.add_argument("--no-region", action="store_true", help="по всем видам, без регионального списка")
-    rs.add_argument("--prior", type=float, default=0.0,
+    rs.add_argument("--prior", type=float, default=REGION_PRIOR,
                     help="поправка на частоту вида в iNat: + W·ln(наблюдений), 0 — без неё")
+    rs.add_argument("--no-exemplars", action="store_true", help="без подтверждённых кадров как образцов")
+    rs.add_argument("--min-obs", type=int, default=REGION_MIN_OBS,
+                    help="в подсказки — виды не реже стольких наблюдений в регионе")
     rg = sub.add_parser("region", help="скачать региональный список видов iNaturalist")
     rg.add_argument("--refresh", action="store_true", help="скачать заново, а не из кэша")
     sm = sub.add_parser("sample", help="случайные кадры в папку для просмотра")
@@ -800,7 +1005,8 @@ def main(argv=None):
     elif a.cmd == "show":
         _show(conn, a.image_id)
     elif a.cmd == "rescore":
-        rescore(conn, region=not a.no_region, prior=a.prior)
+        rescore(conn, region=not a.no_region, prior=a.prior, min_obs=a.min_obs,
+                exemplars=not a.no_exemplars)
         return
     cfg_path = ROOT / "config.json"
     cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
@@ -811,6 +1017,10 @@ def main(argv=None):
         if reg.get("truncated"):
             print("Упёрлись в потолок iNat: " + ", ".join(reg["truncated"]))
         region_filter(conn, TolLabels(), verbose=True)
+        n = sync_names(conn)
+        fill_ru_names(conn)
+        ru = conn.execute("SELECT COUNT(*) FROM species_names WHERE ru IS NOT NULL").fetchone()[0]
+        print(f"Названия для поиска: {n} видов, по-русски — {ru}.")
         print("Дальше: python -m app.species rescore")
         return
     if not cfg_path.exists():

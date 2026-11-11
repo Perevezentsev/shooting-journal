@@ -20,7 +20,7 @@
 - `app/locations.py` — места, синонимы, правила из `locations.txt`.
 - `app/weather.py`, `app/sun.py`, `app/plan.py`, `app/inat.py` — погода, солнце, «Выходные», iNaturalist.
 - `app/field.py` — GPX из папки дня, координаты кадров по треку, находки, безопасная выгрузка.
-- `app/previews.py`, `app/species.py` — превью из `Previews.lrdata`, распознавание видов (`python -m app.species …`), региональный список iNat. Зависимости — `requirements-species.txt`, веса и эмбеддинги — в `data/`.
+- `app/previews.py`, `app/species.py` — превью из `Previews.lrdata`, распознавание видов (`python -m app.species …`), региональный список iNat; `app/review.py` — вкладка «Виды»: серии, подтверждения (`species_confirm`, rescore их не трогает), кропы в `data/crops/`. Зависимости — `requirements-species.txt`, веса и эмбеддинги — в `data/`.
 - `static/index.html` — весь фронтенд в одном файле, vanilla JS. Leaflet лежит в `static/vendor/leaflet`.
 - Новые зависимости (pip/npm/CDN) — только после согласования с Алексеем.
 
