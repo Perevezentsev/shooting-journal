@@ -325,6 +325,13 @@ def api_species_search(q: str):
         return review.search(conn, q)
 
 
+@app.get("/api/species/search-group")
+def api_species_search_group(q: str):
+    """Род или семейство для «неопределимо» — из списка видов региона, без сети."""
+    with db.connect() as conn:
+        return review.search_groups(conn, q)
+
+
 @app.get("/api/species/search-world")
 def api_species_search_world(q: str):
     """iNaturalist по всему миру, с русскими названиями (джейран, сайгак…)."""
@@ -337,7 +344,7 @@ def api_species_search_world(q: str):
 
 class SpeciesDecision(BaseModel):
     ids: list[int]
-    action: str                         # confirm | reject | none | clear
+    action: str                         # confirm | unid | reject | none | clear
     sci: str | None = None
     ru: str | None = None
     inat_id: int | None = None
@@ -365,7 +372,7 @@ class SpeciesBatchItem(BaseModel):
 
 
 class SpeciesBatch(BaseModel):
-    action: str                         # confirm | reject | none
+    action: str                         # confirm | unid | reject | none
     items: list[SpeciesBatchItem]
     source: str | None = "bulk"
 

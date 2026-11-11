@@ -6,7 +6,9 @@
   (цепочка любых кадров дня, хоть без звёзд, с промежутками ≤ SERIES_GAP_S) или если
   у них один топ-1 и между ними не больше SAME_SPECIES_GAP_S. Топ-3 серии — средняя
   вероятность вида по её кадрам.
-- Решения: confirmed (вид), rejected («не то» — подсказки мимо), none («без вида» — пейзаж).
+- Решения: confirmed (вид), rejected («не то» — подсказки мимо), none («без вида» — пейзаж),
+  unid («неопределимо» — животное есть, вид не определить; можно указать род или семейство —
+  scientific/name_ru тогда группа, inat_id пустой). Образцом ни для чего не служит.
 - Кропы для сетки режутся из превью Lightroom по рамке MegaDetector и кэшируются
   в data/crops/. Превью только читаем.
 """
@@ -40,6 +42,16 @@ FUNGI_CLASSES = {"Agaricomycetes", "Lecanoromycetes", "Sordariomycetes", "Leotio
                  "Dothideomycetes", "Tremellomycetes", "Dacrymycetes", "Eurotiomycetes", "Arthoniomycetes",
                  "Pucciniomycetes", "Exobasidiomycetes", "Myxomycetes"}
 CONF_BUCKETS = {"high": (0.9, 2), "mid": (0.5, 0.9), "low": (-1, 0.5)}
+# Привычные названия групп для «неопределимо»: ищутся наравне с семействами iNat
+# и подписывают группу («кулик, вид не определён»)
+GROUP_RU = {"Scolopacidae": "Кулики", "Charadriidae": "Ржанковые кулики", "Laridae": "Чайки",
+            "Anatidae": "Утки, гуси, лебеди", "Accipitridae": "Ястребиные (хищные птицы)",
+            "Falconidae": "Соколы", "Strigidae": "Совы", "Corvidae": "Врановые", "Paridae": "Синицы",
+            "Turdidae": "Дрозды", "Fringillidae": "Вьюрковые", "Picidae": "Дятлы",
+            "Phylloscopidae": "Пеночки", "Sylviidae": "Славки", "Motacillidae": "Трясогузки и коньки",
+            "Ardeidae": "Цапли", "Podicipedidae": "Поганки", "Gaviidae": "Гагары", "Alcidae": "Чистиковые",
+            "Phocidae": "Тюлени", "Mustelidae": "Куньи", "Muridae": "Мыши", "Cricetidae": "Полёвки",
+            "Vespertilionidae": "Летучие мыши"}
 
 _store = None
 _store_t = 0.0
@@ -129,8 +141,9 @@ def items(conn, *, day: str | None = None, loc: int | None = None, state: str = 
 
     series = _series(conn, rows, preds)
 
+    taxa = _taxa(names)
     out = []
-    counts = {"todo": 0, "confirmed": 0, "rejected": 0, "none": 0}
+    counts = {"todo": 0, "confirmed": 0, "unid": 0, "rejected": 0, "none": 0}
     for frames in series:
         d = frames[0]["day_id"]
         if loc and loc not in day_locs.get(d, []):
@@ -159,6 +172,8 @@ def items(conn, *, day: str | None = None, loc: int | None = None, state: str = 
             st = "todo"
         elif any(x["status"] == "confirmed" for x in decided):
             st = "confirmed"
+        elif any(x["status"] == "unid" for x in decided):
+            st = "unid"
         elif all(x["status"] == "none" for x in decided):
             st = "none"
         else:
@@ -188,7 +203,7 @@ def items(conn, *, day: str | None = None, loc: int | None = None, state: str = 
             "state": st,
             "decision": decided[0] if decided and len(same) <= 1 and len(decided) == n else None,
             "mixed_decisions": len(same) > 1,
-            "key": _series_key(st, decided, top, names),
+            "key": _series_key(st, decided, top, names, taxa),
             # кандидаты для «искать в топ-3»: виды из топ-3 любого кадра серии,
             # score — средняя вероятность вида по серии
             "cands": _cands(frames, preds, agg, n, names),
@@ -212,8 +227,15 @@ def _cands(frames, preds, agg, n, names) -> list[dict]:
     return sorted(seen.values(), key=lambda c: -c["score"])
 
 
-def _series_key(st: str, decided: list, top: list, names: dict) -> dict | None:
-    """Вид серии для фильтров: подтверждённый (самый частый по кадрам), иначе топ-1."""
+def _series_key(st: str, decided: list, top: list, names: dict, taxa: dict | None = None) -> dict | None:
+    """Вид серии для фильтров: подтверждённый (самый частый по кадрам), у «неопределимо»
+    с группой — группа (род, семейство), иначе топ-1."""
+    unid = [d for d in decided if d["status"] == "unid" and (d["sci"] or d["ru"])]
+    if st == "unid" and unid:
+        d = unid[0]
+        t = (taxa or {}).get(d["sci"]) or {}
+        return {"sci": d["sci"] or d["ru"], "ru": d["ru"], "group": t.get("group", "other"),
+                "family": t.get("family"), "family_ru": t.get("family_ru")}
     conf = [d for d in decided if d["status"] == "confirmed"]
     if st == "confirmed" and conf:
         from collections import Counter
@@ -266,6 +288,8 @@ def _series(conn, rows, preds) -> list[list]:
 def _decision(c: dict | None, names: dict) -> dict | None:
     if not c:
         return None
+    if c["status"] == "unid":
+        return {"status": "unid", "sci": c["scientific"], "ru": c["name_ru"], "source": c["source"]}
     lab = _label(c["scientific"], names) if c["scientific"] else {"sci": None, "en": None}
     return {"status": c["status"], "sci": lab["sci"], "ru": c["name_ru"] or lab.get("ru"),
             "source": c["source"]}
@@ -330,6 +354,82 @@ def search(conn, q: str, limit: int = 15) -> list[dict]:
     if len(out) < limit:
         out += search_tol(q, limit - len(out), {o["sci"] for o in out})
     return out
+
+
+def _taxa(names: dict) -> dict[str, dict]:
+    """Роды и семейства региона из списка видов: {латынь: {rank, ru, family, family_ru, group, n, ex}}."""
+    out: dict[str, dict] = {}
+    for sci, n in names.items():
+        if n.get("inat_sci") or not sci or " " not in sci:
+            continue
+        grp = _group(n, None)
+        fam = n.get("family")
+        genus = sci.split()[0]
+        g = out.setdefault(genus, {"sci": genus, "rank": "genus", "ru": None, "family": fam,
+                                   "family_ru": n.get("family_ru"), "group": grp, "n": 0, "obs": 0, "ex": []})
+        g["n"] += 1
+        g["obs"] += n.get("obs") or 0
+        if n.get("ru"):
+            g["ex"].append((n.get("obs") or 0, n["ru"]))
+        if fam:
+            f = out.setdefault(fam, {"sci": fam, "rank": "family", "ru": GROUP_RU.get(fam) or n.get("family_ru"),
+                                     "family": fam, "family_ru": n.get("family_ru"), "group": grp,
+                                     "n": 0, "obs": 0, "ex": []})
+            f["family_ru"] = f["family_ru"] or n.get("family_ru")
+            f["ru"] = f["ru"] or n.get("family_ru")
+            f["n"] += 1
+            f["obs"] += n.get("obs") or 0
+            if n.get("ru"):
+                f["ex"].append((n.get("obs") or 0, n["ru"]))
+    return out
+
+
+def search_groups(conn, q: str, limit: int = 12) -> list[dict]:
+    """Род или семейство для «неопределимо»: по латыни, названию семейства (iNat или привычному —
+    «кулики», «чайки») и по русским названиям видов внутри («чайка» → Larus, Laridae)."""
+    q = _norm(q.strip())
+    if len(q) < 2:
+        return []
+    found = []
+    for t in _taxa(_names(conn)).values():
+        best = None
+        fields = [(t["sci"], 0), (t["ru"], 0), (t["family_ru"] if t["rank"] == "family" else None, 0)]
+        fields += [(ru, 1) for _, ru in t["ex"]]
+        for f, extra in fields:
+            f = _norm(f)
+            if not f:
+                continue
+            if f.startswith(q) or any(w.startswith(q) for w in f.replace("-", " ").split()):
+                r = extra
+            elif q in f:
+                r = 2
+            else:
+                continue
+            best = r if best is None else min(best, r)
+        if best is not None:
+            # семейство выше рода при прочих равных: «кулик» — скорее Scolopacidae, чем Calidris
+            found.append((best, t["rank"] != "family", -t["obs"], t))
+    found.sort(key=lambda x: x[:3])
+    out = []
+    for _, _, _, t in found[:limit]:
+        ex = [ru for _, ru in sorted(t["ex"], reverse=True)[:3]]
+        rank = "семейство" if t["rank"] == "family" else "род"
+        hint = f"{rank} · {t['n']} {_plural(t['n'], 'вид', 'вида', 'видов')} в регионе"
+        if t["rank"] == "family" and t["family_ru"] and t["family_ru"] != t["ru"]:
+            hint = f"{t['family_ru']} · " + hint
+        if t["rank"] == "genus" and t["family_ru"]:
+            hint += f" · {t['family_ru']}"
+        out.append({"sci": t["sci"], "ru": t["ru"], "rank": t["rank"], "group": t["group"],
+                    "family": t["family"], "family_ru": t["family_ru"],
+                    "hint": hint + (f": {', '.join(ex).lower()}…" if ex else "")})
+    return out
+
+
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    n = abs(n) % 100
+    if 11 <= n <= 19:
+        return many
+    return one if n % 10 == 1 else few if 2 <= n % 10 <= 4 else many
 
 
 def search_tol(q: str, limit: int, skip: set) -> list[dict]:
@@ -431,6 +531,12 @@ def decide(conn, ids: list[int], action: str, sci: str | None = None, ru: str | 
             if n:
                 ru, inat_id = ru or n[0], inat_id or n[1]
         status = "confirmed"
+    elif action == "unid":
+        # группа необязательна: род или семейство (Scolopacidae, «Кулики»), без inat_id
+        sci = (sci or "").strip() or None
+        ru = (ru or "").strip() or None
+        inat_id = None
+        status = "unid"
     elif action in ("reject", "none"):
         sci = ru = inat_id = None
         status = "rejected" if action == "reject" else "none"

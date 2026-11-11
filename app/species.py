@@ -100,8 +100,8 @@ CREATE TABLE IF NOT EXISTS species_names (
 -- Решения Алексея. Отдельно от species_preds: rescore их не трогает.
 CREATE TABLE IF NOT EXISTS species_confirm (
     image_id     INTEGER PRIMARY KEY,          -- photos.image_id
-    status       TEXT NOT NULL,                -- confirmed | rejected («не то»)
-    scientific   TEXT,                         -- для confirmed
+    status       TEXT NOT NULL,                -- confirmed | unid («неопределимо») | rejected («не то») | none
+    scientific   TEXT,                         -- для confirmed; для unid — род или семейство, если указаны
     name_ru      TEXT,
     inat_id      INTEGER,
     day_id       INTEGER,                      -- день и место — на момент подтверждения

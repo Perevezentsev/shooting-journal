@@ -220,6 +220,9 @@
   .sp-bulk-item:has(input:not(:checked)) { opacity: .45; }
   .sp-bulk-item img { width: 56px; height: 56px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
   .sp-card.none { opacity: .6; }
+  .sp-card.unid { border-style: dashed; }
+  .sp-dec.unid { color: var(--warm); }
+  .sp-search .results .hint { display: block; color: var(--muted); font-size: 11px; }
   .sp-img .empty { left: 6px; top: auto; bottom: 6px; background: rgba(120,90,40,.75); }
   .sp-doubt { display: flex; flex-direction: column; gap: 2px; text-align: left; background: var(--bg);
               border: 1px dashed var(--line); border-radius: 5px; padding: 6px 8px; font: inherit; font-size: 12px;
@@ -355,6 +358,7 @@
       <select id="sp-state">
         <option value="todo">Не разобрано</option>
         <option value="confirmed">Подтверждено</option>
+        <option value="unid">Неопределимо</option>
         <option value="rejected">«Не то»</option>
         <option value="none">Без вида</option>
         <option value="all">Все</option>
@@ -401,7 +405,7 @@
     </div>
     <div class="summary" id="sp-summary"></div>
     <div class="sp-keys">
-      <span><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> подтвердить</span><span><kbd>X</kbd> не то</span><span><kbd>0</kbd> без вида</span>
+      <span><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> подтвердить</span><span><kbd>N</kbd> неопределимо (Enter — без группы)</span><span><kbd>X</kbd> не то</span><span><kbd>0</kbd> без вида</span>
       <span><kbd>/</kbd> найти вид</span><span><kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd> по карточкам</span>
       <span><kbd>Пробел</kbd> крупно (у сомнительной рамки — показать подсказки)</span><span><kbd>E</kbd> развернуть серию</span><span><kbd>Z</kbd> отменить</span>
     </div>
@@ -1828,7 +1832,7 @@ function spApplyLocal(keepSel = false) {
   if (!keepSel) { sp.sel = 0; sp.shown = 0; }
   const c = sp.counts, scope = spScopeText();
   $("#sp-summary").innerHTML = sp.frames ?
-    `Серий в списке: <b>${sp.series.length}</b>${scope ? ` (${esc(scope)})` : ""} · всего серий: не разобрано <b>${c.todo}</b>, подтверждено <b>${c.confirmed}</b>, «не то» <b>${c.rejected}</b>, без вида <b>${c.none}</b> · кадров распознано ${sp.frames}` :
+    `Серий в списке: <b>${sp.series.length}</b>${scope ? ` (${esc(scope)})` : ""} · всего серий: не разобрано <b>${c.todo}</b>, подтверждено <b>${c.confirmed}</b>, неопределимо <b>${c.unid ?? 0}</b>, «не то» <b>${c.rejected}</b>, без вида <b>${c.none}</b> · кадров распознано ${sp.frames}` :
     `Распознавание ещё не запускалось: <code>python -m app.species run</code>`;
   $("#sp-sp-q").classList.toggle("on", !!f);
   buildCards();
@@ -1952,6 +1956,7 @@ function spCardHtml(c, i) {
     : `<div class="sp-none">Животное не найдено, подсказки неуверенные — выбери вид поиском или отметь «не то».</div>`;
   const dec = c.decision ? (c.decision.status === "confirmed"
       ? `<div class="sp-dec ok">✓ ${esc(c.decision.ru || c.decision.sci)}</div>`
+      : c.decision.status === "unid" ? `<div class="sp-dec unid">? ${esc(spUnidText(c.decision))}</div>`
       : c.decision.status === "none" ? `<div class="sp-dec">— без вида</div>` : `<div class="sp-dec no">✗ не то</div>`)
     : c.mixed ? `<div class="sp-dec">в серии разные виды</div>` : "";
   return `<div class="sp-card ${c.kind === "full" ? "full" : ""} ${c.state} ${i === sp.sel ? "sel" : ""}" data-i="${i}">
@@ -1965,6 +1970,7 @@ function spCardHtml(c, i) {
       ${c.frameNo ? `<div class="sp-frame-of">кадр ${c.frameNo} из ${s.n}</div>` : ""}
       ${top}${dec}
       <div class="sp-act">
+        <button class="link" data-act="unid" title="Животное есть, но вид не определить. N">неопределимо</button>
         <button class="link" data-act="x">не то</button>
         <button class="link" data-act="none">без вида</button>
         <button class="link" data-act="search">найти вид</button>
@@ -1973,6 +1979,13 @@ function spCardHtml(c, i) {
       </div>
       <div class="sp-search hidden"><input type="search" placeholder="Название по-русски или латыни"><div class="results"></div></div>
     </div></div>`;
+}
+
+// «Неопределимо»: «Кулики (Scolopacidae) — вид не определён» или просто «неопределимо»
+function spUnidText(d) {
+  if (!d.sci && !d.ru) return "неопределимо";
+  const name = d.ru && d.sci && d.ru !== d.sci ? `${d.ru} (${d.sci})` : d.ru || d.sci;
+  return `${name} — вид не определён`;
 }
 
 function renderSpecies() {
@@ -2022,11 +2035,12 @@ async function spDecide(i, action, t = null, source = null) {
     if (sp.undo.length > 50) sp.undo.shift();
     // локально: решение по кадрам, пересчёт состояния серии
     const dec = action === "clear" ? null :
-      { status: { confirm: "confirmed", reject: "rejected", none: "none" }[action], sci: t?.sci ?? null, ru: t?.ru ?? null, source: body.source };
+      { status: { confirm: "confirmed", unid: "unid", reject: "rejected", none: "none" }[action], sci: t?.sci ?? null, ru: t?.ru ?? null, source: body.source,
+        ...(action === "unid" && t ? { group: t.group, family: t.family, family_ru: t.family_ru } : {}) };
     for (const fr of c.series.frames) if (ids.includes(fr.id)) fr.decision = dec;
     spRecount(c.series);
     const state = readFilters(SP_FILTERS)["sp-state"];
-    const what = { confirm: `✓ ${t?.ru || t?.sci}`, reject: "✗ не то", none: "— без вида", clear: "решение сброшено" }[action];
+    const what = { confirm: `✓ ${t?.ru || t?.sci}`, unid: `? ${spUnidText({ sci: t?.sci, ru: t?.ru })}`, reject: "✗ не то", none: "— без вида", clear: "решение сброшено" }[action];
     status(`${what}${ids.length > 1 ? ` · ${ids.length} ${plural(ids.length, "кадр", "кадра", "кадров")}` : ""} — Z отменит`);
     const keep = state === "all" || c.series.state === state;
     if (!keep) { sp.series = sp.series.filter(s => s !== c.series); sp.all = sp.all.filter(s => s !== c.series); }
@@ -2042,7 +2056,7 @@ function spRecount(s) {
   const dec = s.frames.map(fr => fr.decision).filter(Boolean);
   const old = s.state;
   s.state = dec.length < s.frames.length ? "todo" : dec.some(d => d.status === "confirmed") ? "confirmed"
-    : dec.every(d => d.status === "none") ? "none" : "rejected";
+    : dec.some(d => d.status === "unid") ? "unid" : dec.every(d => d.status === "none") ? "none" : "rejected";
   const kinds = new Set(dec.filter(d => d.status === "confirmed").map(d => d.sci + "|" + d.ru));
   s.decision = dec.length === s.frames.length && kinds.size <= 1 ? dec[0] : null;
   s.mixed_decisions = kinds.size > 1;
@@ -2050,11 +2064,14 @@ function spRecount(s) {
   const conf = dec.find(d => d.status === "confirmed");
   const pick = t => t && { sci: t.sci, ru: t.ru, group: t.group, family: t.family, family_ru: t.family_ru };
   const src = conf && [...(s.cands || []), ...s.top].find(t => t.sci === conf.sci);
+  const unid = dec.find(d => d.status === "unid" && (d.sci || d.ru));
   s.key = s.state === "confirmed" && conf
     ? { ...(pick(src) || { group: "other" }), sci: conf.sci || conf.ru, ru: conf.ru || src?.ru }
+    : s.state === "unid" && unid
+    ? { group: unid.group || "other", family: unid.family || null, family_ru: unid.family_ru || null, sci: unid.sci || unid.ru, ru: unid.ru }
     : pick(s.top[0]) || null;
   if (sp.counts && old !== s.state) {
-    sp.counts[old]--; sp.counts[s.state]++;
+    sp.counts[old] = (sp.counts[old] || 0) - 1; sp.counts[s.state] = (sp.counts[s.state] || 0) + 1;
     $("#nav-species").textContent = sp.counts.todo || "";
   }
 }
@@ -2070,13 +2087,17 @@ async function spUndo() {
   } catch (err) { status("Ошибка: " + err.message, 6000); }
 }
 
-function spOpenSearch(i) {
+// mode "unid" — «неопределимо»: поиск рода или семейства, Enter без текста — без группы
+function spOpenSearch(i, mode = "species") {
   spSelect(i, false);
   const card = document.querySelector(`.sp-card[data-i="${i}"]`);
   if (!card) return;
+  const unid = mode === "unid";
   const box = card.querySelector(".sp-search");
   box.classList.remove("hidden");
   const inp = box.querySelector("input");
+  inp.value = "";
+  inp.placeholder = unid ? "Группа: кулики, чайки, Larus… Enter — без группы" : "Название по-русски или латыни";
   inp.focus();
   let timer, found = [];
   const res = box.querySelector(".results");
@@ -2088,30 +2109,33 @@ function spOpenSearch(i) {
     const all = [...found, ...extra];
     const item = (t, k) => `<button data-k="${k}" class="${k === 0 ? "on" : ""}">
         ${esc(t.ru || t.en || t.sci)} <small>${esc(t.sci)}${t.obs != null ? ` · ${t.obs} набл.` : ""}</small>
-        ${t.rare ? `<span class="rare">редкий</span>` : t.tol ? `<span class="rare">древо жизни</span>` : ""}</button>`;
-    res.innerHTML = found.map(item).join("")
+        ${t.rare ? `<span class="rare">редкий</span>` : t.tol ? `<span class="rare">древо жизни</span>` : ""}
+        ${t.hint ? `<span class="hint">${esc(t.hint)}</span>` : ""}</button>`;
+    res.innerHTML = (unid && !q ? `<button data-plain="1" class="on">неопределимо, без группы <small>Enter</small></button>` : "")
+      + found.map(item).join("")
       + (extra.length ? `<div class="sp-combo-h">iNaturalist, весь мир</div>` + extra.map((t, k) => item(t, found.length + k)).join("") : "")
       + (worldState ? `<div class="hint" style="padding:4px 6px">${worldState}</div>` : "")
-      + (q.length >= 3 ? `<button data-own="1"><small>записать как есть:</small> «${esc(q)}»</button>` : "");
+      + (q.length >= 3 ? `<button data-own="1"><small>${unid ? "группа как есть" : "записать как есть"}:</small> «${esc(q)}»</button>` : "");
     res._all = all;
   };
+  if (unid) draw();
   inp.oninput = () => {
     clearTimeout(timer); clearTimeout(wtimer);
     const q = inp.value.trim();
     world = []; worldState = "";
     timer = setTimeout(async () => {
-      found = q.length >= 2 ? await api("/api/species/search?q=" + encodeURIComponent(q)) : [];
+      found = q.length >= 2 ? await api(`/api/species/${unid ? "search-group" : "search"}?q=` + encodeURIComponent(q)) : [];
       draw();
     }, 180);
     // iNat по всему миру — реже, запросы к нему не чаще раза в секунду
-    if (q.length >= 3) wtimer = setTimeout(async () => {
+    if (q.length >= 3 && !unid) wtimer = setTimeout(async () => {
       worldState = "ищу в iNaturalist…"; draw();
       try { world = await api("/api/species/search-world?q=" + encodeURIComponent(q)); worldState = ""; }
       catch { worldState = "iNaturalist недоступен"; }
       if (inp.value.trim() === q) draw();
     }, 600);
   };
-  const choose = t => spDecide(i, "confirm", t, "search");
+  const choose = t => unid ? spDecide(i, "unid", t, t ? "search" : null) : spDecide(i, "confirm", t, "search");
   const own = () => {
     const q = inp.value.trim();
     choose(/^[A-Za-z]/.test(q) ? { sci: q, ru: null } : { sci: null, ru: q });
@@ -2119,11 +2143,15 @@ function spOpenSearch(i) {
   res.onclick = e => {
     const b = e.target.closest("button");
     if (!b) return;
-    b.dataset.own ? own() : choose((res._all || found)[+b.dataset.k]);
+    b.dataset.plain ? choose(null) : b.dataset.own ? own() : choose((res._all || found)[+b.dataset.k]);
   };
   inp.onkeydown = e => {
     if (e.key === "Escape") { box.classList.add("hidden"); inp.blur(); e.stopPropagation(); }
-    if (e.key === "Enter") { e.preventDefault(); found.length ? choose(found[0]) : inp.value.trim().length >= 3 && own(); }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (unid && !inp.value.trim()) choose(null);
+      else found.length ? choose(found[0]) : inp.value.trim().length >= 3 && own();
+    }
   };
 }
 
@@ -2154,7 +2182,7 @@ function spShowBig(i) {
     const fr = frames[k];
     el.innerHTML = `<img src="/api/species/frame/${fr.id}" alt="">
       <div class="cap">${dmy(c.series.date)} ${fr.time}${frames.length > 1 ? ` · кадр ${k + 1} из ${frames.length} (← →)` : ""}
-      · 1/2/3, X — решение · Esc — закрыть</div>`;
+      · 1/2/3, N, X — решение · Esc — закрыть</div>`;
   };
   sp.box = { step: d => { k = (k + d + frames.length) % frames.length; draw(); } };
   draw();
@@ -2171,6 +2199,7 @@ $("#sp-grid").addEventListener("click", e => {
   if (k) { spDecide(i, "confirm", c.top[+k.dataset.k - 1], "top" + k.dataset.k); return; }
   const act = e.target.closest("[data-act]")?.dataset.act;
   if (act === "x") return spDecide(i, "reject");
+  if (act === "unid") return spOpenSearch(i, "unid");
   if (act === "none") return spDecide(i, "none");
   if (act === "clear") return spDecide(i, "clear");
   if (act === "search") return spOpenSearch(i);
@@ -2200,6 +2229,7 @@ document.addEventListener("keydown", e => {
   }
   else if (key === "x" || key === "ч") { spCloseBig(); spDecide(sp.sel, "reject"); }
   else if (key === "0") { spCloseBig(); spDecide(sp.sel, "none"); }
+  else if (key === "n" || key === "т") { spCloseBig(); spOpenSearch(sp.sel, "unid"); }
   else if (key === "/" || key === "." && e.code === "Slash") { spCloseBig(); spOpenSearch(sp.sel); }
   else if (key === "z" || key === "я") spUndo();
   else if (key === "e" || key === "у") spToggleSeries(sp.sel);
