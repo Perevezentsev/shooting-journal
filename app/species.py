@@ -121,6 +121,10 @@ CREATE INDEX IF NOT EXISTS idx_species_confirm_day ON species_confirm(day_id);
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(species_names)")]
+    for col in ("family", "family_ru"):          # семейство iNat — для фильтра «Вид»
+        if col not in cols:
+            conn.execute(f"ALTER TABLE species_names ADD COLUMN {col} TEXT")
 
 
 def available() -> bool:
@@ -220,6 +224,23 @@ class TolLabels:
                 self._names = json.load(f)
         return self._names
 
+    def index(self):
+        """(по «род вид», по английскому названию, по (класс, эпитет)) → индексы видов."""
+        if getattr(self, "_index", None) is None:
+            index: dict[str, list[int]] = {}
+            by_common: dict[str, list[int]] = {}
+            by_epithet: dict[tuple[str, str], list[int]] = {}
+            for i, (tax, common) in enumerate(self.names):
+                if len(tax) >= 2 and tax[-1]:
+                    ep = tax[-1].split()[0].lower()
+                    index.setdefault(f"{tax[-2]} {ep}".lower(), []).append(i)
+                    if len(tax) > 2:
+                        by_epithet.setdefault((tax[2], ep), []).append(i)
+                    if common:
+                        by_common.setdefault(common.lower(), []).append(i)
+            self._index = (index, by_common, by_epithet)
+        return self._index
+
     def describe(self, idx: int) -> tuple[str, str, str]:
         tax, common = self.names[idx]
         return f"{tax[-2]} {tax[-1]}".strip(), common or "", tax[2] if len(tax) > 2 else ""
@@ -302,20 +323,42 @@ class Exemplars:
         return out
 
 
+EX_MIN_FRAMES, EX_MIN_DAYS = 3, 2
+
+
+def confirmed_tol_map(conn, labels: TolLabels) -> dict[str, int]:
+    """{научное имя подтверждения: tol_idx} — напрямую или через синоним."""
+    index = labels.index()[0]
+    rev = {b: a for a, b in conn.execute("SELECT tol_sci, scientific FROM species_alias")}
+    out = {}
+    for (sci,) in conn.execute("SELECT DISTINCT scientific FROM species_confirm "
+                               "WHERE status = 'confirmed' AND scientific IS NOT NULL"):
+        idx = index.get(sci.lower()) or index.get(rev.get(sci, "").lower())
+        if idx:
+            out[sci] = idx[0]
+    return out
+
+
 def load_exemplars(conn, keep, confirmed_tol: dict, device: str, **kw) -> "Exemplars | None":
     """Образцы из species_confirm: эмбеддинги подтверждённых кадров и столбец их вида в Scorer."""
     import numpy as np
-    if keep is None or not confirmed_tol:
+    if not confirmed_tol:
         return None
-    pos = {int(t): i for i, t in enumerate(keep)}
+    pos = None if keep is None else {int(t): i for i, t in enumerate(keep)}
+    rows = conn.execute("SELECT image_id, scientific, day_id FROM species_confirm "
+                        "WHERE status = 'confirmed' AND scientific IS NOT NULL").fetchall()
+    # Один-два кадра — ещё не образец: единственная нерпа на воде тянула к себе камни в воде
+    per: dict[str, list] = {}
+    for img, sci, day in rows:
+        per.setdefault(sci, []).append((img, day))
+    ok = {sci for sci, xs in per.items() if len(xs) >= EX_MIN_FRAMES and len({d for _, d in xs}) >= EX_MIN_DAYS}
     ids, days, embs, cols = [], [], [], []
-    for img, sci, day in conn.execute("SELECT image_id, scientific, day_id FROM species_confirm "
-                                      "WHERE status = 'confirmed' AND scientific IS NOT NULL"):
+    for img, sci, day in rows:
         t = confirmed_tol.get(sci)
         f = EMB_DIR / f"{img}.npy"
-        if t is None or t not in pos or not f.exists():
+        if sci not in ok or t is None or (pos is not None and t not in pos) or not f.exists():
             continue
-        ids.append(img); days.append(day or 0); cols.append(pos[t])
+        ids.append(img); days.append(day or 0); cols.append(t if pos is None else pos[t])
         embs.append(np.load(f).astype(np.float32))
     if not ids:
         return None
@@ -605,6 +648,10 @@ def run(conn: sqlite3.Connection, cfg: dict, *, all_photos=False, day=None, retr
         signal.signal(signal.SIGINT, old)
         prog.line(gpu_stats(), reason, final=True)
 
+    trip_days = [d for d, p in day_profiles(conn).items() if p != "home"]
+    if prog.done and trip_days:
+        print("Пересчитываю дни поездок их списком видов…")
+        rescore(conn, days=trip_days)
     left = len(queue(conn, all_photos, day, retry))
     summary = ", ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
     print(f"Обработано {prog.done} ({summary}). В очереди осталось {left}."
@@ -698,12 +745,71 @@ def fetch_region(conn, bbox: list[float], refresh=False) -> dict:
     return payload
 
 
-def _region_cached(conn) -> dict | None:
+def _region_key(bbox) -> str:
+    return f"{REGION_CACHE_KEY}|{','.join(f'{float(v):g}' for v in bbox)}"
+
+
+def home_bbox(conn) -> list[float] | None:
+    """Прямоугольник домашнего списка. Списки поездок лежат в том же кэше, поэтому
+    домашний запоминаем в meta; для старых баз — самый первый скачанный список."""
+    r = conn.execute("SELECT value FROM meta WHERE key = 'species_home_bbox'").fetchone()
+    if r:
+        return json.loads(r[0])
     from . import inat
     inat.ensure_schema(conn)
-    row = conn.execute("SELECT data FROM inat_cache WHERE key LIKE ? ORDER BY fetched_at DESC LIMIT 1",
+    row = conn.execute("SELECT data FROM inat_cache WHERE key LIKE ? ORDER BY fetched_at LIMIT 1",
                        (f"{REGION_CACHE_KEY}|%",)).fetchone()
+    return json.loads(row[0])["bbox"] if row else None
+
+
+def _region_cached(conn, bbox=None) -> dict | None:
+    """Скачанный список видов: домашний (bbox=None) или поездки."""
+    from . import inat
+    inat.ensure_schema(conn)
+    bbox = bbox or home_bbox(conn)
+    if not bbox:
+        return None
+    row = conn.execute("SELECT data FROM inat_cache WHERE key = ?", (_region_key(bbox),)).fetchone()
     return json.loads(row[0]) if row else None
+
+
+# ---------- поездки вне домашнего региона ----------
+
+def day_profiles(conn) -> dict[int, str]:
+    """Каким списком видов считать день: 'home' — домашний; 'bbox:…' — список iNat под
+    координаты поездки; 'all' — все виды TreeOfLife (поездка без координат).
+    Поездка — место типа trip или место с координатами вне домашнего прямоугольника."""
+    home = home_bbox(conn)
+    out: dict[int, str] = {}
+    for d, kind, lat, lon in conn.execute(
+            "SELECT dl.day_id, l.kind, l.lat, l.lon FROM day_locations dl JOIN locations l ON l.id = dl.location_id"):
+        inside = lat is not None and home and home[0] <= lat <= home[2] and home[1] <= lon <= home[3]
+        if inside or (kind != "trip" and lat is None):
+            out.setdefault(d, "home")
+            continue
+        if lat is not None:
+            import math
+            b = [math.floor(lat) - 1, math.floor(lon) - 1, math.ceil(lat) + 1, math.ceil(lon) + 1]
+            out[d] = "bbox:" + ",".join(f"{v:g}" for v in b)
+        elif out.get(d, "home") == "home":
+            out[d] = "all"
+    return out
+
+
+def fetch_trips(conn, refresh=False) -> int:
+    """Списки iNat для поездок с координатами (каждый прямоугольник — один раз)."""
+    boxes = sorted({p for p in day_profiles(conn).values() if p.startswith("bbox:")})
+    for b in boxes:
+        bbox = [float(v) for v in b[5:].split(",")]
+        print(f"Поездка: {bbox[0]:g}–{bbox[2]:g}° с.ш., {bbox[1]:g}–{bbox[3]:g}° в.д.")
+        reg = fetch_region(conn, bbox, refresh=refresh)
+        # названия видов поездки — для подписей и поиска (домашние числа наблюдений не трогаем)
+        conn.executemany(
+            "INSERT INTO species_names(scientific, ru, en, inat_id, obs, grp) VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT(scientific) DO NOTHING",
+            [(x["sci"], x.get("ru"), x.get("common"), x.get("id"), x["count"], x["group"]) for x in reg["species"]])
+        conn.commit()
+    return len(boxes)
 
 
 REGION_MIN_OBS = 5     # в подсказки — виды хотя бы с 5 наблюдениями в регионе; редкие — через поиск
@@ -716,10 +822,116 @@ def sync_names(conn) -> int:
     if not reg:
         return 0
     conn.executemany(
-        "INSERT OR REPLACE INTO species_names(scientific, ru, en, inat_id, obs, grp) VALUES (?,?,?,?,?,?)",
+        "INSERT INTO species_names(scientific, ru, en, inat_id, obs, grp) VALUES (?,?,?,?,?,?) "
+        "ON CONFLICT(scientific) DO UPDATE SET ru = COALESCE(excluded.ru, species_names.ru), en = excluded.en, "
+        "inat_id = excluded.inat_id, obs = excluded.obs, grp = excluded.grp",
         [(s["sci"], s.get("ru"), s.get("common"), s.get("id"), s["count"], s["group"]) for s in reg["species"]])
     conn.commit()
     return len(reg["species"])
+
+
+def fill_missing_names(conn, limit=200, verbose=True) -> int:
+    """Названия (по-русски, iNat id, группа) для видов-первых подсказок, которых нет в списках
+    регионов, — это кадры поездок, считанные по всем видам. Один запрос на вид, ~1/с."""
+    import httpx
+    from . import inat
+    names = {r[0] for r in conn.execute("SELECT scientific FROM species_names")}
+    alias = {r[0] for r in conn.execute("SELECT tol_sci FROM species_alias")}
+    tried = {r[0] for r in conn.execute("SELECT key FROM inat_cache WHERE key LIKE 'taxon_lookup|%'")}
+    miss = []
+    for (sci,) in conn.execute("SELECT DISTINCT scientific FROM species_preds WHERE rank = 1"):
+        clean = " ".join(sci.split(" (")[0].split()[:2])
+        if clean.count(" ") == 1 and clean not in names and clean not in alias and f"taxon_lookup|{clean}" not in tried:
+            miss.append(clean)
+    miss = sorted(set(miss))[:limit]
+    got = 0
+    now = datetime.now().isoformat(timespec="seconds")
+    cyr = lambda t: any("а" <= ch.lower() <= "я" for ch in t or "")
+    with httpx.Client(headers=inat.HEADERS) as client:
+        for k, sci in enumerate(miss, 1):
+            data = inat._get(client, "/taxa", {"q": sci, "rank": "species", "locale": "ru", "per_page": 3})
+            t = next((t for t in data.get("results") or [] if t.get("name", "").lower() == sci.lower()), None)
+            conn.execute("INSERT OR REPLACE INTO inat_cache VALUES (?, ?, ?)",
+                         (f"taxon_lookup|{sci}", json.dumps({"found": bool(t)}), now))
+            if t:
+                ru = t.get("preferred_common_name") if cyr(t.get("preferred_common_name")) else None
+                conn.execute("INSERT INTO species_names(scientific, ru, en, inat_id, obs, grp) VALUES (?,?,?,?,NULL,?) "
+                             "ON CONFLICT(scientific) DO NOTHING",
+                             (sci, ru[:1].upper() + ru[1:] if ru else None, t.get("english_common_name"),
+                              t.get("id"), t.get("iconic_taxon_name")))
+                got += 1
+            if verbose:
+                print(f"  названия видов поездок: {k}/{len(miss)}", end="\r", file=sys.stderr, flush=True)
+    if verbose and miss:
+        print(file=sys.stderr)
+    conn.commit()
+    return got
+
+
+def fill_families(conn, verbose=True) -> int:
+    """Семейство (латынь и по-русски) из предков таксона iNat — для видов, которые есть
+    в подсказках (топ-3) или в подтверждениях. 30 видов на запрос, ~1 запрос/с."""
+    import httpx
+    from . import inat
+    rows = conn.execute("""
+        SELECT n.scientific, n.inat_id FROM species_names n
+        WHERE n.family IS NULL AND n.inat_id IS NOT NULL AND (
+          n.scientific IN (SELECT scientific FROM species_confirm)
+          OR n.scientific IN (SELECT a.scientific FROM species_alias a
+                              JOIN species_preds p ON p.scientific LIKE a.tol_sci || '%' WHERE p.rank <= 3)
+          OR EXISTS (SELECT 1 FROM species_preds p WHERE p.rank <= 3
+                     AND (p.scientific = n.scientific OR p.scientific LIKE n.scientific || ' %')))""").fetchall()
+    if not rows:
+        return 0
+    by_id = {r[1]: r[0] for r in rows}
+    ids = list(by_id)
+    got = []
+    with httpx.Client(headers=inat.HEADERS) as client:
+        for k in range(0, len(ids), 30):
+            data = inat._get(client, "/taxa/" + ",".join(map(str, ids[k:k + 30])), {"locale": "ru"})
+            for t in data.get("results") or []:
+                fam = next((a for a in t.get("ancestors") or [] if a.get("rank") == "family"), None)
+                if fam and t.get("id") in by_id:
+                    ru = fam.get("preferred_common_name")
+                    ru = ru if ru and any("а" <= ch.lower() <= "я" for ch in ru) else None
+                    got.append((fam["name"], ru[:1].upper() + ru[1:] if ru else None, by_id[t["id"]]))
+            if verbose:
+                print(f"  семейства: {min(k + 30, len(ids))}/{len(ids)}", end="\r", file=sys.stderr, flush=True)
+    if verbose:
+        print(file=sys.stderr)
+    conn.executemany("UPDATE species_names SET family = ?, family_ru = ? WHERE scientific = ?", got)
+    conn.commit()
+    return len(got)
+
+
+TOL_NAMES_DB = DATA / "tol_names.db"
+
+
+def build_tol_names(force=False) -> Path:
+    """Все виды TreeOfLife (~870 тыс.) в отдельной маленькой базе — для поиска при подтверждении
+    по всему древу жизни: латынь и английские названия, без сети и без 88 МБ JSON в памяти сервера."""
+    if TOL_NAMES_DB.exists() and not force:
+        return TOL_NAMES_DB
+    labels = TolLabels()
+    tmp = TOL_NAMES_DB.with_suffix(".tmp")
+    tmp.unlink(missing_ok=True)
+    c = sqlite3.connect(tmp)
+    c.execute("CREATE TABLE tol (idx INTEGER PRIMARY KEY, sci TEXT, sci_lc TEXT, common TEXT, "
+              "common_lc TEXT, kingdom TEXT, cls TEXT, family TEXT)")
+    rows = []
+    for i, (tax, common) in enumerate(labels.names):
+        if len(tax) < 2 or not tax[-1]:
+            continue
+        sci = f"{tax[-2]} {tax[-1].split()[0]}"
+        rows.append((i, sci, sci.lower(), common or None, (common or "").lower() or None,
+                     tax[0] if tax else None, tax[2] if len(tax) > 2 else None, tax[4] if len(tax) > 4 else None))
+    c.executemany("INSERT INTO tol VALUES (?,?,?,?,?,?,?,?)", rows)
+    c.execute("CREATE INDEX idx_tol_sci ON tol(sci_lc)")
+    c.execute("CREATE INDEX idx_tol_common ON tol(common_lc)")
+    c.commit()
+    c.close()
+    tmp.replace(TOL_NAMES_DB)
+    return TOL_NAMES_DB
 
 
 def fill_ru_names(conn) -> int:
@@ -752,8 +964,9 @@ def fill_ru_names(conn) -> int:
                   end="\r", file=sys.stderr, flush=True)
     print(file=sys.stderr)
     conn.executemany("UPDATE species_names SET ru = ? WHERE scientific = ?", [(v, k) for k, v in found.items()])
-    reg_row = conn.execute("SELECT key, data FROM inat_cache WHERE key LIKE ? ORDER BY fetched_at DESC LIMIT 1",
-                           (f"{REGION_CACHE_KEY}|%",)).fetchone()
+    hb = home_bbox(conn)
+    reg_row = conn.execute("SELECT key, data FROM inat_cache WHERE key = ?",
+                           (_region_key(hb),)).fetchone() if hb else None
     if reg_row:
         reg = json.loads(reg_row[1])
         for sp_ in reg["species"]:
@@ -765,27 +978,17 @@ def fill_ru_names(conn) -> int:
 
 
 def region_filter(conn, labels: TolLabels, prior: float = REGION_PRIOR, verbose=False,
-                  min_obs: int = REGION_MIN_OBS, confirmed_out: dict | None = None):
+                  min_obs: int = REGION_MIN_OBS, confirmed_out: dict | None = None, bbox=None):
     """(keep, log_prior) для Scorer по сохранённому региональному списку; (None, None) — списка нет.
     Сопоставление по «род вид»: у растений в TreeOfLife к эпитету приписан автор — его отрезаем.
     prior > 0 — слабая поправка на частоту вида в iNat: + prior·ln(наблюдений).
     Виды, которые Алексей подтверждал, в списке всегда — даже редкие и не из региона.
     confirmed_out заполняется {научное имя подтверждения: tol_idx} — для образцов."""
-    reg = _region_cached(conn)
+    reg = _region_cached(conn, bbox)
     if not reg:
         return None, None
     import math
-    index: dict[str, list[int]] = {}
-    by_common: dict[str, list[int]] = {}
-    by_epithet: dict[tuple[str, str], list[int]] = {}    # (класс, эпитет) → виды
-    for i, (tax, common) in enumerate(labels.names):
-        if len(tax) >= 2 and tax[-1]:
-            ep = tax[-1].split()[0].lower()
-            index.setdefault(f"{tax[-2]} {ep}".lower(), []).append(i)
-            if len(tax) > 2:
-                by_epithet.setdefault((tax[2], ep), []).append(i)
-            if common:
-                by_common.setdefault(common.lower(), []).append(i)
+    index, by_common, by_epithet = labels.index()
     keep, lp, missed = [], [], []
     synonyms = 0
     aliases: list[tuple[str, str]] = []
@@ -853,40 +1056,134 @@ def region_filter(conn, labels: TolLabels, prior: float = REGION_PRIOR, verbose=
     return keep, (lp if prior else None)
 
 
-def rescore(conn: sqlite3.Connection, keep=None, log_prior=None, chunk=4096,
-            region=True, prior=REGION_PRIOR, min_obs=REGION_MIN_OBS, exemplars=True) -> int:
+def _scorer_for(conn, labels, profile: str, device: str, scale: float, prior, min_obs, exemplars: bool,
+                verbose=True):
+    """Scorer для профиля дня: домашний список, список поездки или все виды."""
+    keep = log_prior = None
+    confirmed: dict = {}
+    if profile == "home" or profile.startswith("bbox:"):
+        bbox = None if profile == "home" else [float(v) for v in profile[5:].split(",")]
+        keep, log_prior = region_filter(conn, labels, prior, verbose=verbose and profile == "home",
+                                        min_obs=min_obs, confirmed_out=confirmed, bbox=bbox)
+        if keep is None:
+            print(("Регионального списка нет (python -m app.species region)" if profile == "home" else
+                   f"Списка для поездки {profile[5:]} ещё нет (python -m app.species region)")
+                  + " — считаю по всем видам.")
+    if keep is None:
+        confirmed = confirmed_tol_map(conn, labels)
+    ex = load_exemplars(conn, keep, confirmed, device) if exemplars else None
+    if verbose and ex is not None and profile == "home":
+        print(f"  Образцы: {len(ex)} подтверждённых кадров, {len(ex.groups)} видов "
+              f"(не меньше {EX_MIN_FRAMES} кадров из {EX_MIN_DAYS} дней).")
+    return Scorer(labels, device, scale, keep, log_prior, ex)
+
+
+def rescore(conn: sqlite3.Connection, chunk=4096, region=True, prior=REGION_PRIOR,
+            min_obs=REGION_MIN_OBS, exemplars=True, days: list[int] | None = None) -> int:
     """Пересчитать species_preds из сохранённых эмбеддингов — превью и модели не нужны.
-    region — ограничить видами регионального списка, если он скачан (`region`)."""
+    Дни поездок считаются своим списком видов (см. day_profiles), остальные — домашним.
+    days — пересчитать только эти дни."""
     import numpy as np
     import torch
     device = "cuda" if torch.cuda.is_available() else "cpu"
     conn.execute("PRAGMA busy_timeout = 30000")     # прогон может писать в базу параллельно
     row = conn.execute("SELECT value FROM meta WHERE key = 'species_logit_scale'").fetchone()
+    scale = float(row[0]) if row else 100.0
     labels = TolLabels()
-    confirmed: dict = {}
-    if region and keep is None:
-        keep, log_prior = region_filter(conn, labels, prior, verbose=True, min_obs=min_obs,
-                                        confirmed_out=confirmed)
-        if keep is None:
-            print("Регионального списка нет (python -m app.species region) — считаю по всем видам.")
-    ex = load_exemplars(conn, keep, confirmed, device) if exemplars else None
-    if ex is not None:
-        print(f"  Образцы: {len(ex)} подтверждённых кадров, {len(ex.groups)} видов.")
-    scorer = Scorer(labels, device, float(row[0]) if row else 100.0, keep, log_prior, ex)
-    ids = [r[0] for r in conn.execute(
-        "SELECT image_id FROM species_crops WHERE model = ? ORDER BY image_id", (EMB_MODEL,))]
+    profiles = day_profiles(conn) if region else {}
+    q = ("SELECT c.image_id, p.day_id FROM species_crops c JOIN photos p ON p.image_id = c.image_id "
+         "WHERE c.model = ?" + (f" AND p.day_id IN ({','.join('?' * len(days))})" if days else "")
+         + " ORDER BY c.image_id")
+    groups: dict[str, list[int]] = {}
+    for img, d in conn.execute(q, [EMB_MODEL, *(days or [])]):
+        prof = profiles.get(d, "home") if region else "all"
+        groups.setdefault(prof, []).append(img)
+    total = sum(len(v) for v in groups.values())
     done = 0
-    for i in range(0, len(ids), chunk):
-        part = [j for j in ids[i:i + chunk] if (EMB_DIR / f"{j}.npy").exists()]
-        if not part:
-            continue
-        embs = np.stack([np.load(EMB_DIR / f"{j}.npy").astype(np.float32) for j in part])
-        _write_preds(conn, part, scorer.topk(embs, ids=part), scorer.labels)
-        conn.commit()
-        done += len(part)
-        print(f"  {done}/{len(ids)}", end="\r", file=sys.stderr, flush=True)
+    for prof in sorted(groups, key=lambda p: p != "home"):
+        ids = groups[prof]
+        if prof != "home":
+            print(f"  Поездка ({'все виды' if prof == 'all' else 'список ' + prof[5:]}): {len(ids)} кадров")
+        scorer = _scorer_for(conn, labels, prof, device, scale, prior, min_obs, exemplars)
+        for i in range(0, len(ids), chunk):
+            part = [j for j in ids[i:i + chunk] if (EMB_DIR / f"{j}.npy").exists()]
+            if not part:
+                continue
+            embs = np.stack([np.load(EMB_DIR / f"{j}.npy").astype(np.float32) for j in part])
+            _write_preds(conn, part, scorer.topk(embs, ids=part), labels)
+            conn.commit()
+            done += len(part)
+            print(f"  {done}/{total}", end="\r", file=sys.stderr, flush=True)
+        del scorer
+        if device == "cuda":
+            torch.cuda.empty_cache()
     print(f"Пересчитано: {done} кадров.")
+    n = score_empty(conn, device)
+    if n:
+        print(f"Похожих на «без вида» (уйдут в конец списка): {n}.")
+    try:
+        n = fill_missing_names(conn)
+        if n:
+            print(f"Названия iNat для видов поездок: {n}.")
+        n = fill_families(conn)
+        if n:
+            print(f"Семейства iNat для новых видов в подсказках: {n}.")
+    except Exception as e:
+        print(f"Семейства не загрузились ({type(e).__name__}) — фильтр по семействам их пока не покажет.")
     return done
+
+
+EMPTY_K = 3
+
+
+def score_empty(conn, device: str = "cpu", exclude_days=False) -> int:
+    """«Похоже на без вида»: среднее сходство с k ближайшими кадрами, которые Алексей
+    отметил «без вида», против сходства с k ближайшими подтверждёнными. Только для
+    сортировки — меток не ставит. Кадр не служит образцом сам себе."""
+    import numpy as np
+    import torch
+    conn.execute("CREATE TABLE IF NOT EXISTS species_empty (image_id INTEGER PRIMARY KEY, "
+                 "sim_none REAL, sim_species REAL)")
+    ex = {"none": [], "confirmed": []}
+    for img, st, d in conn.execute("SELECT image_id, status, day_id FROM species_confirm "
+                                   "WHERE status IN ('none', 'confirmed')"):
+        f = EMB_DIR / f"{img}.npy"
+        if f.exists():
+            ex[st].append((img, d or 0, f))
+    conn.execute("DELETE FROM species_empty")
+    if len(ex["none"]) < EMPTY_K or len(ex["confirmed"]) < EMPTY_K:
+        conn.commit()
+        return 0
+    def load(xs):
+        return (torch.as_tensor(np.stack([np.load(f).astype(np.float32) for _, _, f in xs]), device=device),
+                torch.as_tensor([i for i, _, _ in xs], device=device),
+                torch.as_tensor([d for _, d, _ in xs], device=device))
+    N, Ni, Nd = load(ex["none"])
+    C, Ci, Cd = load(ex["confirmed"])
+    rows = conn.execute("SELECT c.image_id, p.day_id FROM species_crops c JOIN photos p ON p.image_id = c.image_id "
+                        "WHERE c.model = ?", (EMB_MODEL,)).fetchall()
+    rows = [(i, d) for i, d in rows if (EMB_DIR / f"{i}.npy").exists()]
+    out, likely = [], 0
+    with torch.no_grad():
+        for k in range(0, len(rows), 2048):
+            part = rows[k:k + 2048]
+            E = torch.as_tensor(np.stack([np.load(EMB_DIR / f"{i}.npy").astype(np.float32) for i, _ in part]),
+                                device=device)
+            ids = torch.as_tensor([i for i, _ in part], device=device)
+            dd = torch.as_tensor([d or 0 for _, d in part], device=device)
+            def top(S, Xi, Xd):
+                S = S.clone()
+                S[ids[:, None] == Xi[None, :]] = -1
+                if exclude_days:
+                    S[dd[:, None] == Xd[None, :]] = -1
+                return S.topk(EMPTY_K, dim=1).values.mean(dim=1)
+            sn, sc = top(E @ N.T, Ni, Nd), top(E @ C.T, Ci, Cd)
+            for (i, _), a, b in zip(part, sn.tolist(), sc.tolist()):
+                out.append((i, round(a, 4), round(b, 4)))
+                likely += a > b
+    conn.executemany("INSERT INTO species_empty VALUES (?, ?, ?)", out)
+    conn.commit()
+    return likely
 
 
 def sample(conn, cfg: dict, out: Path, n=30, status="full", max_score=0.5, seed=None) -> int:
@@ -975,6 +1272,7 @@ def main(argv=None):
     rs.add_argument("--prior", type=float, default=REGION_PRIOR,
                     help="поправка на частоту вида в iNat: + W·ln(наблюдений), 0 — без неё")
     rs.add_argument("--no-exemplars", action="store_true", help="без подтверждённых кадров как образцов")
+    rs.add_argument("--days", type=int, nargs="+", help="только эти дни (id)")
     rs.add_argument("--min-obs", type=int, default=REGION_MIN_OBS,
                     help="в подсказки — виды не реже стольких наблюдений в регионе")
     rg = sub.add_parser("region", help="скачать региональный список видов iNaturalist")
@@ -1006,19 +1304,28 @@ def main(argv=None):
         _show(conn, a.image_id)
     elif a.cmd == "rescore":
         rescore(conn, region=not a.no_region, prior=a.prior, min_obs=a.min_obs,
-                exemplars=not a.no_exemplars)
+                exemplars=not a.no_exemplars, days=a.days)
         return
     cfg_path = ROOT / "config.json"
     cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
     if a.cmd == "region":
         bbox = region_bbox(conn, cfg)
         print(f"Прямоугольник: {bbox[0]:g}–{bbox[2]:g}° с.ш., {bbox[1]:g}–{bbox[3]:g}° в.д.")
+        conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('species_home_bbox', ?)", (json.dumps(bbox),))
+        conn.commit()
         reg = fetch_region(conn, bbox, refresh=a.refresh)
         if reg.get("truncated"):
             print("Упёрлись в потолок iNat: " + ", ".join(reg["truncated"]))
         region_filter(conn, TolLabels(), verbose=True)
         n = sync_names(conn)
         fill_ru_names(conn)
+        n_trips = fetch_trips(conn, refresh=a.refresh)
+        trips_all = sum(1 for p in set(day_profiles(conn).values()) if p == "all")
+        if n_trips or trips_all:
+            print(f"Поездки: списков iNat {n_trips}" + (", без координат — по всем видам (поставь координаты "
+                  "месту на карте, и region соберёт для него список)" if trips_all else "") + ".")
+        fill_families(conn)
+        build_tol_names()
         ru = conn.execute("SELECT COUNT(*) FROM species_names WHERE ru IS NOT NULL").fetchone()[0]
         print(f"Названия для поиска: {n} видов, по-русски — {ru}.")
         print("Дальше: python -m app.species rescore")

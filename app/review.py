@@ -26,6 +26,7 @@ from . import species as sp
 SERIES_GAP_S = 10
 SAME_SPECIES_GAP_S = 120
 NO_SUGGEST_BELOW = 0.5      # «животное не найдено» и топ-1 ниже — подсказки не показываем
+DOUBT_BELOW = 0.5           # рамка MegaDetector ниже — «сомнительная»: подсказки свёрнуты
 CROPS_DIR = sp.DATA / "crops"
 THUMB_PX = 400
 BIG_PX = 1600
@@ -96,7 +97,8 @@ def _label(sci: str | None, names: dict, common: str | None = None, class_name: 
     n = names.get(clean) or {}
     # подтверждаем под именем iNat: так вид совпадёт с поиском и с наблюдениями iNat
     return {"sci": n.get("inat_sci") or clean, "ru": n.get("ru"), "en": n.get("en") or common or None,
-            "inat_id": n.get("inat_id"), "group": _group(n, class_name), "rare": bool(n) and (n.get("obs") or 0) < sp.REGION_MIN_OBS}
+            "inat_id": n.get("inat_id"), "group": _group(n, class_name),
+            "family": n.get("family"), "family_ru": n.get("family_ru"), "rare": n.get("obs") is not None and n["obs"] < sp.REGION_MIN_OBS}
 
 
 def items(conn, *, day: str | None = None, loc: int | None = None, state: str = "todo",
@@ -112,6 +114,10 @@ def items(conn, *, day: str | None = None, loc: int | None = None, state: str = 
                           "ORDER BY image_id, rank"):
         preds.setdefault(r[0], []).append((r[2], r[3], r[4], r[5]))
     confirms = {r["image_id"]: dict(r) for r in conn.execute("SELECT * FROM species_confirm")}
+    try:
+        empty = {r[0] for r in conn.execute("SELECT image_id FROM species_empty WHERE sim_none > sim_species")}
+    except Exception:
+        empty = set()
 
     rows = conn.execute(
         "SELECT p.image_id, p.day_id, p.capture_time, c.status AS kind, c.det_conf, d.date "
@@ -139,6 +145,7 @@ def items(conn, *, day: str | None = None, loc: int | None = None, state: str = 
             c = confirms.get(f["image_id"])
             fr_out.append({
                 "id": f["image_id"], "time": (f["capture_time"] or "")[11:19], "kind": f["kind"],
+                "det": f["det_conf"], "empty": f["image_id"] in empty,
                 "top": [{**_label(s, names, cm, cl), "score": round(sc, 3)} for s, cm, sc, cl in ps[:3]],
                 "decision": _decision(c, names),
             })
@@ -162,7 +169,10 @@ def items(conn, *, day: str | None = None, loc: int | None = None, state: str = 
             continue
         if conf in CONF_BUCKETS and not (CONF_BUCKETS[conf][0] <= top1 < CONF_BUCKETS[conf][1]):
             continue
-        if kind == "crop" and k == "full" or kind == "full" and k != "full":
+        dets = [f["det_conf"] for f in frames if f["kind"] == "crop" and f["det_conf"] is not None]
+        det = max(dets) if dets else None
+        doubt = k != "full" and det is not None and det < DOUBT_BELOW
+        if kind == "crop" and k == "full" or kind == "full" and k != "full" or kind == "doubt" and not doubt:
             continue
         rep = max(frames, key=lambda f: (f["kind"] == "crop", f["det_conf"] or 0))
         same = {(x["sci"], x["ru"]) for x in decided if x["status"] == "confirmed"}
@@ -172,16 +182,34 @@ def items(conn, *, day: str | None = None, loc: int | None = None, state: str = 
             "places": [loc_names.get(l) for l in day_locs.get(d, []) if loc_names.get(l)],
             "kind": k, "top": top,
             "suggest": not (k == "full" and top1 < NO_SUGGEST_BELOW),
+            "det": det, "doubt": doubt,
+            # большинство кадров похоже на твои «без вида» — в конец списка, без метки
+            "empty": sum(fr["empty"] for fr in fr_out) * 2 > n,
             "state": st,
             "decision": decided[0] if decided and len(same) <= 1 and len(decided) == n else None,
             "mixed_decisions": len(same) > 1,
             "key": _series_key(st, decided, top, names),
+            # кандидаты для «искать в топ-3»: виды из топ-3 любого кадра серии,
+            # score — средняя вероятность вида по серии
+            "cands": _cands(frames, preds, agg, n, names),
             # у всех кадров один топ-1 — серию можно подтверждать массово
             "uniform": len({fr["top"][0]["sci"] if fr["top"] else None for fr in fr_out}) == 1,
             "frames": fr_out,
         })
     out.sort(key=lambda s: (s["date"], s["time"]), reverse=True)
+    out.sort(key=lambda s: s["empty"])          # устойчиво: внутри групп порядок по дате
     return {"series": out, "counts": counts, "frames": len(rows)}
+
+
+def _cands(frames, preds, agg, n, names) -> list[dict]:
+    seen: dict[str, dict] = {}
+    for f in frames:
+        for sci, common, _score, cls in preds.get(f["image_id"], [])[:3]:
+            if sci not in seen:
+                lab = _label(sci, names, common, cls)
+                seen[sci] = {k: lab.get(k) for k in ("sci", "ru", "group", "family", "family_ru", "inat_id")}
+                seen[sci]["score"] = round(agg[sci][0] / n, 3)
+    return sorted(seen.values(), key=lambda c: -c["score"])
 
 
 def _series_key(st: str, decided: list, top: list, names: dict) -> dict | None:
@@ -191,9 +219,11 @@ def _series_key(st: str, decided: list, top: list, names: dict) -> dict | None:
         from collections import Counter
         sci, ru = Counter((d["sci"], d["ru"]) for d in conf).most_common(1)[0][0]
         n = names.get(sci) if sci else None
-        return {"sci": sci or ru, "ru": ru or (n or {}).get("ru"), "group": _group(n, None)}
+        return {"sci": sci or ru, "ru": ru or (n or {}).get("ru"), "group": _group(n, None),
+                "family": (n or {}).get("family"), "family_ru": (n or {}).get("family_ru")}
     if top:
-        return {"sci": top[0]["sci"], "ru": top[0]["ru"], "group": top[0]["group"]}
+        t = top[0]
+        return {k: t.get(k) for k in ("sci", "ru", "group", "family", "family_ru")}
     return None
 
 
@@ -296,7 +326,67 @@ def search(conn, q: str, limit: int = 15) -> list[dict]:
             if r[0] not in have and (q in _norm(r[0]) or q in _norm(r[1])):
                 out.append({"sci": r[0], "ru": r[1], "en": None, "inat_id": None, "obs": None,
                             "group": None, "rare": True, "own": True})
-    return out[:limit]
+    out = out[:limit]
+    if len(out) < limit:
+        out += search_tol(q, limit - len(out), {o["sci"] for o in out})
+    return out
+
+
+def search_tol(q: str, limit: int, skip: set) -> list[dict]:
+    """Все виды TreeOfLife (data/tol_names.db): латынь и английские названия, без сети."""
+    if not sp.TOL_NAMES_DB.exists() or limit <= 0:
+        return []
+    import sqlite3
+    c = sqlite3.connect(f"file:{sp.TOL_NAMES_DB}?mode=ro", uri=True)
+    try:
+        rows = c.execute("SELECT sci, common, kingdom, cls, family FROM tol WHERE sci_lc LIKE ? OR common_lc LIKE ? "
+                         "LIMIT ?", (q + "%", q + "%", limit * 3)).fetchall()
+        if len(rows) < limit and len(q) >= 3:
+            rows += c.execute("SELECT sci, common, kingdom, cls, family FROM tol WHERE common_lc LIKE ? LIMIT ?",
+                              ("%" + q + "%", limit * 3)).fetchall()
+    finally:
+        c.close()
+    out, seen = [], set(skip)
+    for sci, common, kingdom, cls, family in rows:
+        if sci in seen:
+            continue
+        seen.add(sci)
+        out.append({"sci": sci, "ru": None, "en": common, "inat_id": None, "obs": None,
+                    "group": cls or kingdom, "family": family, "rare": False, "tol": True})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def search_inat(conn, q: str, limit: int = 10) -> list[dict]:
+    """Автодополнение iNat по всему миру, с русскими названиями. Кэш в inat_cache на 30 дней."""
+    from . import inat
+    q = q.strip()
+    if len(q) < 3:
+        return []
+    inat.ensure_schema(conn)
+    key = f"autocomplete|{_norm(q)}"
+    data = inat.cached(conn, key)
+    if data is None:
+        import httpx
+        with httpx.Client(headers=inat.HEADERS) as client:
+            r = inat._get(client, "/taxa/autocomplete", {"q": q, "locale": "ru", "per_page": 15})
+        data = [{"sci": t.get("name"), "ru": t.get("preferred_common_name"), "en": t.get("english_common_name"),
+                 "inat_id": t.get("id"), "rank": t.get("rank"), "group": t.get("iconic_taxon_name"),
+                 "obs": t.get("observations_count")}
+                for t in r.get("results") or [] if t.get("rank") in ("species", "subspecies")]
+        conn.execute("INSERT OR REPLACE INTO inat_cache VALUES (?, ?, ?)",
+                     (key, json.dumps(data, ensure_ascii=False), datetime.now().isoformat(timespec="seconds")))
+        conn.commit()
+    out = []
+    for t in data[:limit]:
+        ru = t.get("ru")
+        if ru and not any("а" <= ch.lower() <= "я" for ch in ru):
+            ru = None
+        sci = " ".join((t["sci"] or "").split()[:2])
+        out.append({"sci": sci, "ru": ru, "en": t.get("en"), "inat_id": t.get("inat_id"), "obs": None,
+                    "group": t.get("group"), "rare": False, "world": True})
+    return out
 
 
 # ---------- подтверждение ----------

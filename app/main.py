@@ -320,8 +320,19 @@ def api_species_items(day: str | None = None, loc: int | None = None, state: str
 
 @app.get("/api/species/search")
 def api_species_search(q: str):
+    """Регион, затем всё древо TreeOfLife (латынь, английские названия) — без сети."""
     with db.connect() as conn:
         return review.search(conn, q)
+
+
+@app.get("/api/species/search-world")
+def api_species_search_world(q: str):
+    """iNaturalist по всему миру, с русскими названиями (джейран, сайгак…)."""
+    try:
+        with db.connect() as conn:
+            return review.search_inat(conn, q)
+    except Exception as e:
+        raise HTTPException(502, f"iNaturalist недоступен: {e}")
 
 
 class SpeciesDecision(BaseModel):

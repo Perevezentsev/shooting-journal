@@ -20,7 +20,7 @@
 - `app/locations.py` — места, синонимы, правила из `locations.txt`.
 - `app/weather.py`, `app/sun.py`, `app/plan.py`, `app/inat.py` — погода, солнце, «Выходные», iNaturalist.
 - `app/field.py` — GPX из папки дня, координаты кадров по треку, находки, безопасная выгрузка.
-- `app/previews.py`, `app/species.py` — превью из `Previews.lrdata`, распознавание видов (`python -m app.species …`), региональный список iNat; `app/review.py` — вкладка «Виды»: серии, подтверждения (`species_confirm`, rescore их не трогает), кропы в `data/crops/`. Зависимости — `requirements-species.txt`, веса и эмбеддинги — в `data/`.
+- `app/previews.py`, `app/species.py` — превью из `Previews.lrdata`, распознавание видов (`python -m app.species …`), региональный список iNat; `app/review.py` — вкладка «Виды»: серии, подтверждения (`species_confirm`, rescore их не трогает), кропы в `data/crops/`. Дни поездок (место типа trip или вне домашнего прямоугольника) считаются своим списком iNat или по всем видам (`species.day_profiles`); имена TreeOfLife для поиска — `data/tol_names.db`. Зависимости — `requirements-species.txt`, веса и эмбеддинги — в `data/`.
 - `static/index.html` — весь фронтенд в одном файле, vanilla JS. Leaflet лежит в `static/vendor/leaflet`.
 - Новые зависимости (pip/npm/CDN) — только после согласования с Алексеем.
 
@@ -29,6 +29,7 @@
 - Каталог Lightroom, NEF и XMP только читаем. Никогда не пишем в каталог и в файлы снимков. Координаты и метки живут в базе журнала; в Lightroom их потом будет записывать плагин через его API.
 - В git не должны попадать: `config.json`, `locations.txt`, `data/`, `scan*.txt`, `*.zip`, любые GPX и фото Алексея, реальные координаты его мест. Перед коммитом проверь `git status`.
 - Скриншоты и примеры для README — только из демо-базы с выдуманными местами.
+- В CHANGELOG, README и сообщениях коммитов — без названий мест и поездок Алексея. Пиши обобщённо: «поездки вне региона», «места без координат», «точка у берега».
 - Находки (норы, дупла, гнёзда) по умолчанию скрытые: наружу (GPX, iNat, Lightroom) — только огрублённые координаты (~1 км), трек вокруг вырезается. Не ослабляй это без явной просьбы.
 - Единственный публичный контакт — Telegram @Perevezentsev. Почту Алексея нигде не указывать.
 
