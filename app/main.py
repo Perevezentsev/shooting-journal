@@ -463,8 +463,17 @@ def _species_cfg() -> dict:
     return cfg
 
 
+def _demo_tile(image_id: int, w: int, h: int) -> Response | None:
+    with db.connect() as conn:
+        if db.is_demo(conn):
+            return Response(review.demo_tile_svg(conn, image_id, w, h), media_type="image/svg+xml")
+    return None
+
+
 @app.get("/api/species/crop/{image_id}")
 def api_species_crop(image_id: int):
+    if (r := _demo_tile(image_id, 400, 400)) is not None:
+        return r
     cfg = _species_cfg()
     with db.connect() as conn:
         try:
@@ -478,6 +487,8 @@ def api_species_crop(image_id: int):
 
 @app.get("/api/species/frame/{image_id}")
 def api_species_frame(image_id: int):
+    if (r := _demo_tile(image_id, 1200, 800)) is not None:
+        return r
     try:
         data = review.big_jpeg(_species_cfg(), image_id)
     except (ImportError, FileNotFoundError) as e:

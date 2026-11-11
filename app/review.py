@@ -642,6 +642,38 @@ def restore(conn, ids: list[int], rows: list[dict]) -> None:
 
 # ---------- картинки ----------
 
+# Демо-база: превью Lightroom у неё нет — вместо кропа плитка с цветом группы и названием вида
+DEMO_TILE = {"birds": (200, "🐦"), "mammals": (28, "🦌"), "herps": (105, "🐸"), "insects": (45, "🦋"),
+             "plants": (140, "🌿"), "fungi": (10, "🍄"), "other": (210, "🔍")}
+
+
+def demo_tile_svg(conn, image_id: int, w: int = 400, h: int = 400) -> str:
+    """SVG-заглушка кадра для демо: подтверждённый вид, иначе топ-1 подсказки."""
+    from html import escape
+    names = _names(conn)
+    c = conn.execute("SELECT scientific, name_ru FROM species_confirm WHERE image_id = ? AND status = 'confirmed'",
+                     (image_id,)).fetchone()
+    p = conn.execute("SELECT scientific, common, class_name FROM species_preds WHERE image_id = ? AND rank = 1",
+                     (image_id,)).fetchone()
+    sci = (c and c["scientific"]) or (p and p["scientific"])
+    lab = _label(sci, names, p["common"] if p else None, p["class_name"] if p else None) if sci else {}
+    hue, icon = DEMO_TILE.get(lab.get("group", "other"), DEMO_TILE["other"])
+    import zlib
+    k = zlib.crc32((sci or "").encode())                 # у каждого вида свой оттенок группы
+    color = f"hsl({hue + k % 50 - 25}, {30 + k // 50 % 20}%, {28 + k // 1000 % 12}%)"
+    ru = escape((c and c["name_ru"]) or lab.get("ru") or sci or "?")
+    s = min(w, h)
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">'
+            f'<defs><radialGradient id="g" cx="50%" cy="40%" r="75%"><stop offset="0" stop-color="{color}" stop-opacity=".55"/>'
+            f'<stop offset="1" stop-color="{color}"/></radialGradient></defs>'
+            f'<rect width="100%" height="100%" fill="url(#g)"/>'
+            f'<text x="50%" y="46%" font-size="{s * .34:.0f}" text-anchor="middle" dominant-baseline="middle">{icon}</text>'
+            f'<text x="50%" y="80%" font-size="{s * .075:.0f}" fill="#fff" text-anchor="middle" '
+            f'font-family="system-ui, sans-serif">{ru}</text>'
+            f'<text x="{w - 10}" y="{h - 10}" font-size="{s * .045:.0f}" fill="#fff" fill-opacity=".6" text-anchor="end" '
+            f'font-family="system-ui, sans-serif">демо</text></svg>')
+
+
 def crop_jpeg(conn, cfg: dict, image_id: int) -> Path | None:
     """Кроп для сетки (или целый кадр, если животное не найдено), кэш в data/crops/."""
     dst = CROPS_DIR / f"{image_id}.jpg"

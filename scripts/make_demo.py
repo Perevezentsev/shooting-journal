@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import random
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -22,17 +22,17 @@ DEMO_PATH = ROOT / "data" / "demo.db"
 
 # (название, широта, долгота, тип, «вес» — как часто туда ездят)
 PLACES = [
-    ("Северный мыс",        59.972, 29.161, "place", 14),
-    ("Песчаная бухта",      59.938, 29.402, "place", 9),
-    ("Тихое озеро",         60.214, 29.818, "place", 11),
-    ("Сосновый бор",        60.152, 30.248, "place", 8),
-    ("Заливные луга",       59.784, 30.102, "place", 10),
-    ("Мшистое болото",      59.861, 29.702, "place", 7),
-    ("Еловый ручей",        59.642, 30.427, "place", 6),
-    ("Старый карьер",       59.701, 29.954, "place", 5),
-    ("Ладожская коса",      60.832, 31.104, "place", 6),
-    ("Речная пойма",        59.553, 30.211, "place", 4),
-    ("Каменная гряда",      60.297, 29.502, "place", 3),
+    ("Северный мыс",        58.472, 33.561, "place", 14),
+    ("Песчаная бухта",      58.438, 33.802, "place", 9),
+    ("Тихое озеро",         58.714, 34.218, "place", 11),
+    ("Сосновый бор",        58.652, 34.648, "place", 8),
+    ("Заливные луга",       58.284, 34.502, "place", 10),
+    ("Мшистое болото",      58.361, 34.102, "place", 7),
+    ("Еловый ручей",        58.142, 34.827, "place", 6),
+    ("Старый карьер",       58.201, 34.354, "place", 5),
+    ("Дальняя коса",      59.332, 35.504, "place", 6),
+    ("Речная пойма",        58.053, 34.611, "place", 4),
+    ("Каменная гряда",      58.797, 33.902, "place", 3),
     ("Ольховая роща",       None,   None,   "place", 2),
     ("Устье протоки",       None,   None,   "place", 2),
     ("Горы, поход 2025",    None,   None,   "trip",  2),
@@ -41,10 +41,10 @@ PLACES = [
 
 # Точки внутри мест: (место, название, широта, долгота, куда смотрит берег, по умолчанию)
 SPOTS = [
-    ("Северный мыс",   "западная сторона мыса", 59.9735, 29.1490, 270, False),
-    ("Северный мыс",   "восточная сторона, у стоянки", 59.9712, 29.1705, 90, True),
-    ("Песчаная бухта", "дальний конец косы", 59.9402, 29.4161, 0, True),
-    ("Ладожская коса", "у тростников", 60.8336, 31.0987, 90, True),
+    ("Северный мыс",   "западная сторона мыса", 58.4735, 33.5490, 270, False),
+    ("Северный мыс",   "восточная сторона, у стоянки", 58.4712, 33.5705, 90, True),
+    ("Песчаная бухта", "дальний конец косы", 58.4402, 33.8161, 0, True),
+    ("Дальняя коса", "у тростников", 59.3336, 35.4987, 90, True),
 ]
 
 NOTES = [
@@ -64,18 +64,18 @@ NOTES = [
 SPRING_AUTUMN = {4, 5, 6, 7, 8, 9, 10}
 SPECIES = [
     ("Cinclus cinclus", "Оляпка", "Aves", "Cinclidae", "Оляпковые", {1, 2, 3, 11, 12}, {"Еловый ручей", "Речная пойма"}),
-    ("Bucephala clangula", "Гоголь", "Aves", "Anatidae", "Утиные", {3, 4, 5, 9, 10, 11}, {"Северный мыс", "Ладожская коса", "Тихое озеро"}),
+    ("Bucephala clangula", "Гоголь", "Aves", "Anatidae", "Утиные", {3, 4, 5, 9, 10, 11}, {"Северный мыс", "Дальняя коса", "Тихое озеро"}),
     ("Anas platyrhynchos", "Кряква", "Aves", "Anatidae", "Утиные", None, None),
-    ("Cygnus cygnus", "Лебедь-кликун", "Aves", "Anatidae", "Утиные", {4, 5, 10, 11}, {"Ладожская коса", "Заливные луга"}),
+    ("Cygnus cygnus", "Лебедь-кликун", "Aves", "Anatidae", "Утиные", {4, 5, 10, 11}, {"Дальняя коса", "Заливные луга"}),
     ("Vanellus vanellus", "Чибис", "Aves", "Charadriidae", "Ржанковые", SPRING_AUTUMN, {"Заливные луга"}),
     ("Tringa totanus", "Травник", "Aves", "Scolopacidae", "Бекасовые", {5, 6, 7, 8}, {"Песчаная бухта", "Северный мыс"}),
     ("Calidris alpina", "Чернозобик", "Aves", "Scolopacidae", "Бекасовые", {5, 8, 9}, {"Песчаная бухта"}),
     ("Numenius arquata", "Большой кроншнеп", "Aves", "Scolopacidae", "Бекасовые", {4, 5, 6, 7}, {"Заливные луга", "Мшистое болото"}),
     ("Larus canus", "Сизая чайка", "Aves", "Laridae", "Чайковые", SPRING_AUTUMN, None),
-    ("Sterna hirundo", "Речная крачка", "Aves", "Laridae", "Чайковые", {5, 6, 7, 8}, {"Северный мыс", "Ладожская коса"}),
+    ("Sterna hirundo", "Речная крачка", "Aves", "Laridae", "Чайковые", {5, 6, 7, 8}, {"Северный мыс", "Дальняя коса"}),
     ("Ardea cinerea", "Серая цапля", "Aves", "Ardeidae", "Цаплевые", SPRING_AUTUMN, {"Речная пойма", "Тихое озеро"}),
     ("Grus grus", "Серый журавль", "Aves", "Gruidae", "Журавлиные", {4, 5, 9}, {"Мшистое болото", "Заливные луга"}),
-    ("Haliaeetus albicilla", "Орлан-белохвост", "Aves", "Accipitridae", "Ястребиные", None, {"Ладожская коса", "Северный мыс"}),
+    ("Haliaeetus albicilla", "Орлан-белохвост", "Aves", "Accipitridae", "Ястребиные", None, {"Дальняя коса", "Северный мыс"}),
     ("Circus aeruginosus", "Болотный лунь", "Aves", "Accipitridae", "Ястребиные", {5, 6, 7, 8}, {"Заливные луга"}),
     ("Dryocopus martius", "Желна", "Aves", "Picidae", "Дятловые", None, {"Сосновый бор", "Еловый ручей"}),
     ("Dendrocopos major", "Большой пёстрый дятел", "Aves", "Picidae", "Дятловые", None, {"Сосновый бор", "Ольховая роща"}),
@@ -154,6 +154,54 @@ def add_species(conn, days: list[tuple[int, date, str]]) -> dict:
     return stats
 
 
+FINDS = [("Нора", "свежие выбросы земли, следы у входа", 1),
+         ("Дупло", "слышал птенцов", 1),
+         ("Точка у берега", "вечером свет в спину, птица подходит близко", 0)]
+
+
+def add_tracks(conn, coords: dict[str, tuple[float, float]], n_days: int = 3) -> int:
+    """Выдуманные треки (петля вокруг места) и находки — для «Карты дня»: координаты кадров
+    берутся по треку, скрытые находки при выгрузке огрубляются."""
+    import json
+    import math
+    from app import field
+    rows = conn.execute(
+        "SELECT d.id, d.source_name, MIN(p.capture_time) t1, MAX(p.capture_time) t2, COUNT(*) n "
+        "FROM days d JOIN photos p ON p.day_id = d.id GROUP BY d.id ORDER BY n DESC").fetchall()
+    done = 0
+    for r in rows:
+        if done >= n_days or r["source_name"] not in coords:
+            continue
+        lat0, lon0 = coords[r["source_name"]]
+        tz = field.UTC_OFFSET_H
+        t1 = datetime.fromisoformat(r["t1"]) - timedelta(minutes=25)
+        t2 = datetime.fromisoformat(r["t2"]) + timedelta(minutes=25)
+        u1 = int(t1.replace(tzinfo=timezone(timedelta(hours=tz))).timestamp())     # GPX — в UTC
+        steps = max(60, int((t2 - t1).total_seconds() // 15))
+        pts, length = [], 0.0
+        r_km, ph = random.uniform(.8, 1.6), random.uniform(0, 6.3)
+        for k in range(steps + 1):                       # петля с «гулянием»: эллипс + шум
+            a = 2 * math.pi * k / steps
+            rr = r_km * (1 + .18 * math.sin(5 * a) + .05 * math.sin(17 * a + ph))
+            la = lat0 + rr / 111 * math.sin(a) * .7
+            lo = lon0 + rr / (111 * math.cos(math.radians(lat0))) * (1 - math.cos(a))
+            if pts:
+                length += field.dist_m(pts[-1][0], pts[-1][1], la, lo)
+            pts.append([round(la, 6), round(lo, 6), u1 + k * 15])
+        iso = lambda u: datetime.fromtimestamp(u, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: E731
+        conn.execute("INSERT INTO tracks(day_id, file_path, file_mtime, started_at, ended_at, points, length_m, geom) "
+                     "VALUES (?, ?, 0, ?, ?, ?, ?, ?)", (r["id"], f"demo/{r['id']}/Трек/track.gpx", iso(pts[0][2]),
+                                                         iso(pts[-1][2]), len(pts), round(length), json.dumps(pts)))
+        for (name, note, sens), frac in zip(FINDS, (.22, .5, .78)):
+            la, lo, u = pts[int(frac * steps)]
+            conn.execute("INSERT INTO finds(day_id, source_key, lat, lon, time, name, note, sensitive) "
+                         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (r["id"], f"demo|{r['id']}|{name}", la + .0004, lo + .0006,
+                                                             iso(u), name, note, sens))
+        field.geotag_day(conn, r["id"])
+        done += 1
+    return done
+
+
 def season_weight(d: date) -> float:
     # Весна и осень — пролёт, выезжают чаще
     return {3: 1.2, 4: 2.2, 5: 2.4, 6: 1.0, 7: 0.7, 8: 1.1, 9: 1.6, 10: 1.8, 11: 0.8}.get(d.month, 0.6)
@@ -204,9 +252,10 @@ def main() -> None:
         n += 1
 
     sp = add_species(conn, made)
+    tracks = add_tracks(conn, {p[0]: (p[1], p[2]) for p in PLACES if p[1] is not None})
     conn.commit()
     print(f"Готово: {DEMO_PATH.relative_to(ROOT)} — {len(PLACES)} мест, {n} дней, {len(SPOTS)} точки; "
-          f"виды: {sp['photos']} кадров, подтверждено {sp['confirmed']}, «видел» {sp['seen']}")
+          f"виды: {sp['photos']} кадров, подтверждено {sp['confirmed']}, «видел» {sp['seen']}; треков {tracks}")
     print("Запуск: JOURNAL_DB=data/demo.db ./run.sh")
 
 

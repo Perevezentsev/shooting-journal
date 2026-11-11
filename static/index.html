@@ -2768,7 +2768,10 @@ document.querySelectorAll("nav button").forEach(b => b.addEventListener("click",
 restoreFilters(FILTERS.days, "days-filters");
 restoreFilters(FILTERS.locs, "locs-filters");
 locSort = store.get("locs-sort", locSort);
-showTab(store.get("tab", "days"));
+// Ссылки на вкладку и карту дня: #tab=life, #day-map=12 — для закладок и скриншотов
+const startHash = new URLSearchParams(location.hash.slice(1));
+const TABS = ["days", "locations", "map", "plan", "species", "life"];
+showTab(TABS.includes(startHash.get("tab")) ? startHash.get("tab") : store.get("tab", "days"));
 pollSpeciesRun();
 api("/api/info").then(i => {
   if (!i.demo) return;
@@ -2776,7 +2779,10 @@ api("/api/info").then(i => {
   $("#sync").disabled = true;
   $("#sync").title = "В демо-базе синхронизация отключена";
 }).catch(() => {});
-loadAll().then(() => api("/api/weather/status")).then(st => {
+loadAll().then(() => {
+  if (startHash.get("day-map")) openDayMap(+startHash.get("day-map"));
+  return api("/api/weather/status");
+}).then(st => {
   $("#wx-fetch").textContent = st.pending ? `Загрузить погоду · ${st.pending}` : "Погода загружена";
   if (st.running) pollWeather();
 }).catch(err => status("Ошибка: " + err.message, 8000));
