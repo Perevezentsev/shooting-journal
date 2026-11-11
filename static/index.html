@@ -142,6 +142,24 @@
                color: #fff; font-size: 10px; font-weight: 700; }
   .find-icon.open { background: #2f7d4f; }
   .fieldlink { font-size: 12px; margin-top: 2px; }
+  /* --- Лайфлист --- */
+  .lf-years { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }
+  .lf-year { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer;
+             font: inherit; color: inherit; text-align: left; min-width: 104px; }
+  .lf-year:hover, .lf-year.on { border-color: var(--accent); }
+  .lf-year b { font-size: 16px; }
+  .lf-year .sub { font-size: 12px; color: var(--muted); }
+  .lf-table td { vertical-align: middle; }
+  .lf-thumb { width: 64px; height: 48px; object-fit: cover; border-radius: 3px; cursor: pointer; display: block; background: var(--line); }
+  .lf-table .sci { font-size: 12px; color: var(--muted); font-style: italic; }
+  .lf-new { font-size: 11px; color: var(--warm); margin-left: 6px; }
+  .lf-months-wrap { overflow-x: auto; }
+  .lf-months td, .lf-months th { padding: 4px 6px; text-align: center; font-variant-numeric: tabular-nums; }
+  .lf-months td:first-child, .lf-months th:first-child { text-align: left; white-space: nowrap; }
+  .lf-months td.c { color: var(--panel); font-size: 12px; }
+  .lf-months tr.visits td { color: var(--muted); font-size: 12px; }
+  .pcard .mine { font-size: 12px; margin-top: 2px; }
+  .pcard .mine button.link { font-size: 12px; }
   .runbadge { border: 1px solid var(--line); background: none; border-radius: 10px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
   .runbadge:hover { border-color: var(--accent); }
   #sp-run-info { font-size: 12px; }
@@ -275,6 +293,7 @@
     <button data-tab="map">Карта<span class="count" id="nav-map"></span></button>
     <button data-tab="plan">Выходные</button>
     <button data-tab="species">Виды<span class="count" id="nav-species"></span></button>
+    <button data-tab="life">Лайфлист<span class="count" id="nav-life"></span></button>
   </nav>
   <div class="spacer"></div>
   <span id="status"></span>
@@ -363,6 +382,32 @@
   </section>
 
   <!-- ВИДЫ -->
+  <section id="tab-life" class="hidden">
+    <div class="toolbar">
+      <input type="search" id="lf-q" placeholder="Вид: русское или латинское название">
+      <select id="lf-year"><option value="">Все годы</option></select>
+      <select id="lf-group"><option value="">Все группы</option></select>
+      <select id="lf-sort">
+        <option value="first">Сначала новые в списке</option>
+        <option value="first-asc">По порядку встречи</option>
+        <option value="name">По названию</option>
+        <option value="days">По числу дней</option>
+      </select>
+    </div>
+    <div class="summary" id="lf-summary"></div>
+    <div class="lf-years" id="lf-years"></div>
+    <table class="lf-table">
+      <thead><tr><th class="num">№</th><th></th><th>Вид</th><th>Первая встреча</th><th class="num">Дней</th><th class="num hide-sm">Мест</th><th class="hide-sm">Последний раз</th></tr></thead>
+      <tbody id="lf-body"></tbody>
+    </table>
+    <h2 style="margin:24px 0 8px">Места и месяцы</h2>
+    <div class="toolbar">
+      <select id="lf-place"></select>
+      <span class="muted" id="lf-place-info"></span>
+    </div>
+    <div class="lf-months-wrap"><table class="lf-months" id="lf-months"></table></div>
+  </section>
+
   <section id="tab-species" class="hidden">
     <div class="toolbar">
       <select id="sp-state">
@@ -523,6 +568,7 @@ function fillYears() {
 // Ключ вида — как в фильтре вкладки «Виды»: латынь, у группы без латыни — русское имя.
 const DSP_GROUPS = [["birds", "Птицы"], ["mammals", "Млекопитающие"], ["herps", "Земноводные и рептилии"],
                     ["insects", "Насекомые"], ["plants", "Растения"], ["fungi", "Грибы"], ["other", "Прочее"]];
+const GROUP_TITLE = Object.fromEntries(DSP_GROUPS);
 const dspKey = x => (x.unid ? "unid:" : "sp:") + (x.sci || x.ru || "");
 const dspName = x => x.unid ? (x.ru || x.sci ? `${x.ru || x.sci} sp.` : "неопределимо") : (x.ru || x.sci);
 function fillDaySpecies() {
@@ -723,7 +769,7 @@ $("#days-body").addEventListener("click", e => {
   if (!b) return;
   const d = days.find(x => x.id === +b.closest("tr").dataset.id);
   const k = b.dataset.dsp, i = k.indexOf(":");
-  openSpeciesFor(d.date, k.slice(0, i) === "unid", k.slice(i + 1));
+  openSpeciesFor({ date: d.date, unid: k.slice(0, i) === "unid", sci: k.slice(i + 1), state: b.dataset.dspSeen ? "unsel" : "" });
 });
 $("#days-body").addEventListener("mousedown", e => { if (e.target.classList.contains("loc")) fillLocSelect(e.target); });
 $("#days-body").addEventListener("focusin", e => { if (e.target.classList.contains("loc")) fillLocSelect(e.target); });
@@ -1492,6 +1538,20 @@ function inatUrl(lat, lon, radius, months) {
   if (months && months.length) q.set("month", months.join(","));
   return "https://www.inaturalist.org/observations?" + q;
 }
+// Свои подтверждённые виды на месте в это время года (±2 недели, все годы)
+function myLine(p) {
+  const l = p.my_species || [];
+  if (!l.length) return "";
+  const LIM = 10;
+  return `<div class="mine">ты здесь подтверждал в эти недели: ${l.slice(0, LIM).map(x =>
+    `<button class="link" data-lf-open="${esc(x.sci)}" data-lf-loc="${p.id}" title="${esc(x.sci)} · последний раз ${dmy(x.last)} — кадры во «Видах»">${esc(x.ru || x.sci)}</button>${
+      x.days > 1 ? ` <small class="muted">${x.days} дн.</small>` : ""}`).join(", ")}${l.length > LIM ? ` и ещё ${l.length - LIM}` : ""}</div>`;
+}
+$("#plan-list").addEventListener("click", e => {
+  const b = e.target.closest("[data-lf-open]");
+  if (b) openSpeciesFor({ sci: b.dataset.lfOpen, loc: b.dataset.lfLoc || "" });
+});
+
 function inatLine(p, r) {
   if (!p.inat) return `<div class="inat">iNaturalist: загружаю наблюдения рядом…</div>`;
   const i = p.inat;
@@ -1595,6 +1655,7 @@ function renderPlan(r) {
         : "в эти недели не был"} · всего выездов: ${p.total_visits}
         ${p.why.length ? `<div class="why">почему здесь: ${esc(p.why.join("; "))}</div>` : ""}
         ${p.notes.map(x => `<div class="note">${dayLink(x.day_id, x.date)}: ${esc(x.text)}</div>`).join("")}
+        ${myLine(p)}
         ${inatLine(p, r)}</div>
       <div class="cols">${r.dates.map(d => planDayHtml(d, p.per_date[d])).join("")}</div>
     </div>`).join("");
@@ -2121,7 +2182,7 @@ async function spDecide(i, action, t = null, source = null) {
     renderSpecies();
     spSelect(next);
     loadSpeciesMeta().catch(() => {});
-    sp.daysStale = true;
+    sp.daysStale = true; life.stale = true;
   } catch (err) { status("Ошибка: " + err.message, 6000); }
 }
 
@@ -2155,7 +2216,7 @@ async function spUndo() {
   try {
     await api("/api/species/undo", { method: "POST", body: JSON.stringify(u) });
     status("Отменено");
-    sp.daysStale = true;
+    sp.daysStale = true; life.stale = true;
     await loadSpecies(true);
     loadSpeciesMeta().catch(() => {});
   } catch (err) { status("Ошибка: " + err.message, 6000); }
@@ -2328,7 +2389,7 @@ function spScope() { const t = spScopeText(); return t ? ` (${esc(t)})` : ""; }
 async function spBatch(action, items, what) {
   const r = await api("/api/species/decide-batch", { method: "POST", body: JSON.stringify({ action, items }) });
   sp.undo.push(r.undo);
-  sp.daysStale = true;
+  sp.daysStale = true; life.stale = true;
   status(`${what}: ${r.series} ${plural(r.series, "серия", "серии", "серий")}, ${r.n} ${plural(r.n, "кадр", "кадра", "кадров")} — Z отменит`, 6000);
   await loadSpecies(true);
   loadSpeciesMeta().catch(() => {});
@@ -2432,6 +2493,105 @@ $("#sp-none-day").addEventListener("click", async () => {
   } catch (err) { status("Ошибка: " + err.message, 6000); }
 });
 
+// --- ЛАЙФЛИСТ ----------------------------------------------------------------
+// Только подтверждённые тобой виды (без «неопределимо»); первая встреча — самый ранний кадр.
+const LF_FILTERS = ["lf-q", "lf-year", "lf-group", "lf-sort"];
+let life = { data: null, stale: false, bySci: new Map() };
+const lfName = s => s ? (s.ru || s.sci) : "";
+
+async function loadLife() {
+  life.stale = false;
+  try { life.data = await api("/api/lifelist"); }
+  catch (err) { status("Ошибка: " + err.message, 8000); return; }
+  const d = life.data;
+  life.bySci = new Map(d.species.map(s => [s.sci, s]));
+  $("#nav-life").textContent = d.total || "";
+  const saved = store.get("life-filters", {});
+  $("#lf-year").innerHTML = `<option value="">Все годы</option>` + d.years.map(y => `<option value="${y.year}">${y.year} · ${y.species} ${plural(y.species, "вид", "вида", "видов")}</option>`).join("");
+  $("#lf-group").innerHTML = `<option value="">Все группы</option>` + DSP_GROUPS.filter(([g]) => d.groups[g])
+    .map(([g, t]) => `<option value="${g}">${t} · ${d.groups[g]}</option>`).join("");
+  const pv = $("#lf-place").value || saved["lf-place"];
+  $("#lf-place").innerHTML = d.places.map(p => `<option value="${p.id}">${esc(p.name)} · ${p.species} ${plural(p.species, "вид", "вида", "видов")}</option>`).join("")
+    || `<option value="">Пока нет мест с подтверждёнными видами</option>`;
+  restoreFilters(LF_FILTERS, "life-filters");
+  if (pv && d.places.some(p => String(p.id) === String(pv))) $("#lf-place").value = pv;
+  renderLife();
+  renderLifeMonths();
+}
+
+function renderLife() {
+  const d = life.data;
+  if (!d) return;
+  const f = readFilters(LF_FILTERS);
+  store.set("life-filters", { ...f, "lf-place": $("#lf-place").value });
+  const q = norm(f["lf-q"].trim()), y = f["lf-year"], g = f["lf-group"];
+  let list = d.species.filter(s => (!y || s.years.includes(y)) && (!g || s.group === g)
+    && (!q || norm(s.ru).includes(q) || norm(s.sci).includes(q) || norm(s.family_ru).includes(q)));
+  // порядковый номер вида в лайфлисте — по первой встрече, не зависит от фильтров
+  const order = [...d.species].sort((a, b) => a.first.date.localeCompare(b.first.date) || a.first.image_id - b.first.image_id);
+  const no = new Map(order.map((s, i) => [s.sci, i + 1]));
+  const sorts = { first: (a, b) => no.get(b.sci) - no.get(a.sci), "first-asc": (a, b) => no.get(a.sci) - no.get(b.sci),
+                  name: (a, b) => lfName(a).localeCompare(lfName(b), "ru"), days: (a, b) => b.days - a.days || no.get(a.sci) - no.get(b.sci) };
+  list = list.sort(sorts[f["lf-sort"]] || sorts.first);
+
+  const gs = DSP_GROUPS.filter(([k]) => d.groups[k]).map(([k, t]) => `${t.toLowerCase()} ${d.groups[k]}`).join(", ");
+  const yr = y && d.years.find(x => x.year === y);
+  $("#lf-summary").innerHTML = !d.total ? "Подтверждённых видов пока нет — разбери кадры во вкладке «Виды»." :
+    (yr ? `${y}: <b>${yr.species}</b> ${plural(yr.species, "вид", "вида", "видов")}, новых в лайфлисте <b>${yr.new}</b> · ` : "") +
+    `всего <b>${d.total}</b> ${plural(d.total, "вид", "вида", "видов")} (${gs}) · ${d.frames.toLocaleString("ru")} ${plural(d.frames, "кадр", "кадра", "кадров")} за ${d.days} ${plural(d.days, "день", "дня", "дней")}` +
+    (list.length !== (yr ? yr.species : d.total) ? ` · в списке ${list.length}` : "");
+
+  const maxY = Math.max(1, ...d.years.map(x => x.species));
+  $("#lf-years").innerHTML = d.years.map(x => `<button class="lf-year${x.year === y ? " on" : ""}" data-year="${x.year}"
+      title="${DSP_GROUPS.filter(([k]) => x.groups[k]).map(([k, t]) => `${t}: ${x.groups[k]}`).join(" · ")}">
+      <div>${x.year}</div><b>${x.species}</b> <span class="sub">${plural(x.species, "вид", "вида", "видов")}</span>
+      <div class="sub">новых: ${x.new}</div>
+      <div style="height:3px;background:var(--accent);opacity:.6;width:${Math.round(100 * x.species / maxY)}%;margin-top:4px"></div></button>`).join("");
+
+  $("#lf-body").innerHTML = list.map(s => `<tr>
+      <td class="num muted">${no.get(s.sci)}</td>
+      <td><img class="lf-thumb" loading="lazy" src="/api/species/crop/${s.first.image_id}" alt="" title="Первый кадр — открыть во «Видах»"
+           data-lf-open="${esc(s.sci)}" onerror="this.style.visibility='hidden'"></td>
+      <td><button class="link" data-lf-open="${esc(s.sci)}" title="Все кадры вида во «Видах»">${esc(lfName(s))}</button>${
+        y && s.first.date.startsWith(y) ? `<span class="lf-new">новый в ${y}</span>` : ""}
+        <div class="sci">${s.ru ? esc(s.sci) + " · " : ""}${esc(s.family_ru || s.family || "")}${s.family_ru || s.family ? " · " : ""}${GROUP_TITLE[s.group] || ""}</div></td>
+      <td class="date">${dayLink(s.first.day_id, s.first.date)}${s.first.place ? `<div class="sci" style="font-style:normal">${esc(s.first.place)}</div>` : ""}</td>
+      <td class="num">${s.days}</td>
+      <td class="num hide-sm">${s.places}</td>
+      <td class="hide-sm date muted">${s.last !== s.first.date ? dmy(s.last) : ""}</td>
+    </tr>`).join("") || `<tr><td colspan="7" class="empty">${d.total ? "Ничего не найдено — ослабь фильтры." : ""}</td></tr>`;
+}
+
+function renderLifeMonths() {
+  const d = life.data, p = d?.places.find(x => String(x.id) === $("#lf-place").value);
+  if (!p) { $("#lf-months").innerHTML = ""; $("#lf-place-info").textContent = ""; return; }
+  store.set("life-filters", { ...readFilters(LF_FILTERS), "lf-place": $("#lf-place").value });
+  const M = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+  const cur = new Date().getMonth() + 1;
+  const max = Math.max(1, ...p.rows.flatMap(r => Object.values(r.months)));
+  $("#lf-place-info").textContent = `ячейка — в скольких днях вид подтверждён в этот месяц (все годы); строка «выездов» — сколько дней ты там был`;
+  $("#lf-months").innerHTML = `<thead><tr><th>Вид</th>${M.map((m, i) => `<th${i + 1 === cur ? ' style="color:var(--ink)"' : ""}>${m}</th>`).join("")}<th class="num">Дней</th></tr></thead>
+    <tbody><tr class="visits"><td>выездов</td>${M.map((_, i) => `<td>${p.visits[i + 1] || ""}</td>`).join("")}<td></td></tr>
+    ${p.rows.map(r => { const s = life.bySci.get(r.sci); return `<tr><td><button class="link" data-lf-open="${esc(r.sci)}" data-lf-loc="${p.id}"
+        title="Кадры вида на этом месте во «Видах»">${esc(lfName(s) || r.sci)}</button></td>${M.map((_, i) => {
+        const n = r.months[i + 1];
+        return n ? `<td class="c" style="background:color-mix(in srgb, var(--accent) ${Math.round(35 + 65 * n / max)}%, transparent)">${n}</td>` : "<td></td>";
+      }).join("")}<td class="num">${r.days}</td></tr>`; }).join("")}</tbody>`;
+}
+
+for (const id of LF_FILTERS) $("#" + id).addEventListener("input", renderLife);
+$("#lf-place").addEventListener("change", renderLifeMonths);
+$("#lf-years").addEventListener("click", e => {
+  const b = e.target.closest("[data-year]");
+  if (!b) return;
+  $("#lf-year").value = $("#lf-year").value === b.dataset.year ? "" : b.dataset.year;
+  renderLife();
+});
+$("#tab-life").addEventListener("click", e => {
+  const b = e.target.closest("[data-lf-open]");
+  if (b) openSpeciesFor({ sci: b.dataset.lfOpen, loc: b.dataset.lfLoc || "" });
+});
+
 // --- фоновое распознавание ---------------------------------------------------
 // Прогон — отдельный процесс (python -m app.species run); журнал только запускает,
 // останавливает и показывает прогресс из data/species_run.json.
@@ -2485,14 +2645,15 @@ $("#sp-run").addEventListener("click", async () => {
 });
 $("#sp-run-badge").addEventListener("click", () => showTab("species"));
 
-// Из карточки дня: «Виды» с фильтром по дню и виду (подтверждённые или неопределимые)
-async function openSpeciesFor(date, unid, sci) {
+// Из «Дней», «Лайфлиста», «Выходных»: «Виды» с фильтром по виду и, если заданы, дню и месту
+async function openSpeciesFor({ date = "", loc = "", unid = false, sci = "", state = "" }) {
   showTab("species");
   try {
     await openSpeciesTab();
-    $("#sp-state").value = unid ? "unid" : "confirmed";
+    $("#sp-state").value = state || (unid ? "unid" : "confirmed");
     $("#sp-day").value = date;
-    for (const id of ["sp-loc", "sp-conf", "sp-kind", "sp-group"]) $("#" + id).value = "";
+    $("#sp-loc").value = loc;
+    for (const id of ["sp-conf", "sp-kind", "sp-group"]) $("#" + id).value = "";
     $("#sp-top3").checked = false;
     $("#sp-species").value = sci ? "sp:" + sci : "";
     await loadSpecies();
@@ -2519,9 +2680,10 @@ async function spFirstOpen() {
 
 function showTab(tab) {
   document.querySelectorAll("nav button").forEach(x => x.classList.toggle("active", x.dataset.tab === tab));
-  for (const t of ["days", "locations", "map", "plan", "species"]) $("#tab-" + t).classList.toggle("hidden", tab !== t);
+  for (const t of ["days", "locations", "map", "plan", "species", "life"]) $("#tab-" + t).classList.toggle("hidden", tab !== t);
   if (tab === "plan" && !planLoaded) loadPlan();
   if (tab === "species") openSpeciesTab();
+  if (tab === "life" && (!life.data || life.stale)) loadLife();
   if (tab === "days" && sp.daysStale) {      // решения во «Видах» меняют виды в карточках дней
     sp.daysStale = false;
     api("/api/days").then(r => { days = r; fillDaySpecies(); renderDays(); }).catch(() => {});

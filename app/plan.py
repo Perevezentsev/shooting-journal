@@ -294,6 +294,11 @@ def build(conn: sqlite3.Connection, dates: list[date], all_places: bool = False,
             why.append(f"высокий отбор в сезон ({rate}%)")
         p["why"] = why
     places.sort(key=lambda p: (p["score"], p["total_visits"]), reverse=True)
+    # свои подтверждённые виды на месте в это время года (все годы, то же окно ±SEASON_DAYS)
+    from . import lifelist
+    mine = lifelist.season_at(conn, [p["id"] for p in places], dates, SEASON_DAYS)
+    for p in places:
+        p["my_species"] = mine.get(p["id"], [])
     return {"dates": [t.isoformat() for t in dates], "places": places,
             "inat_jobs": jobs, "inat_months": months, "inat_radius_km": inat.RADIUS_KM,
             "season_days": SEASON_DAYS, "generated_at": datetime.now().isoformat(timespec="minutes")}

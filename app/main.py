@@ -19,7 +19,7 @@ from . import db
 from .locations import KINDS, merge_locations, set_day_locations
 from .lrcat import Photo
 from .sync import sync_catalog
-from . import field, inat, plan, review, species, weather
+from . import field, inat, lifelist, plan, review, species, weather
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
@@ -342,6 +342,12 @@ def api_species_run_start():
 @app.post("/api/species/run/stop")
 def api_species_run_stop():
     return species.stop_run()
+
+
+@app.get("/api/lifelist")
+def api_lifelist():
+    with db.connect() as conn:
+        return lifelist.build(conn)
 
 
 @app.get("/api/species/meta")
