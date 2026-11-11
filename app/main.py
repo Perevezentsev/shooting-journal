@@ -244,7 +244,10 @@ def _find_ctx(conn, find_id: int):
     if not f:
         raise HTTPException(404, "Заметка не найдена")
     day = conn.execute("SELECT * FROM days WHERE id = ?", (f["day_id"],)).fetchone()
-    return dict(f), field.day_folder(conn, day, _cfg_soft().get("path_map"))
+    folder = field.day_folder(conn, day, _cfg_soft().get("path_map"))
+    if f["photo_file"] and folder and field.relink_photo_files(conn, day["id"], folder):
+        f = conn.execute("SELECT * FROM finds WHERE id = ?", (find_id,)).fetchone()
+    return dict(f), folder
 
 
 @app.get("/api/finds/{find_id}/photo")
@@ -264,6 +267,8 @@ def api_phone_photos(day_id: int):
     with db.connect() as conn:
         day = _day_or_404(conn, day_id)
         folder = field.day_folder(conn, day, _cfg_soft().get("path_map"))
+        if folder:
+            field.relink_photo_files(conn, day_id, folder)
         finds = [dict(r) for r in conn.execute("SELECT * FROM finds WHERE day_id = ?", (day_id,))]
     if not folder or not folder.is_dir():
         return {"folder": str(folder) if folder else None, "photos": []}

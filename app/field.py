@@ -1,7 +1,11 @@
 """Полевые данные дня: GPX-трек и заметки с телефона (OsmAnd и другие трекеры).
 
 Что делает:
-- ищет *.gpx в папке съёмки дня (там же, где NEF);
+- ищет *.gpx в корне папки дня и в «Трек»;
+- фото-заметки берёт из «С телефона» (старое имя «Телефон» тоже понимает).
+
+Папка дня (см. CLAUDE.md): ДДММГГГГ_Место/ — NEF (подпапки импорта Lightroom),
+Трек/ — GPX, С телефона/ — фото с телефона, Видео/, Аудио/. Подпапки необязательные.
 - трек сохраняет в базу, точки (wpt) — как находки, скрытые по умолчанию;
 - координаты снимков считает по времени: местное время кадра → UTC → точка трека.
 
@@ -57,6 +61,25 @@ CREATE INDEX IF NOT EXISTS idx_finds_day ON finds(day_id);
 
 NS = {"g": "http://www.topografix.com/GPX/1/1"}
 
+# Подпапки дня съёмки. Первое имя — текущее, остальные — старые, их тоже понимаем.
+TRACK_DIRS = ("Трек",)
+PHONE_DIRS = ("С телефона", "Телефон")
+VIDEO_DIRS = ("Видео",)          # пока не читаются: видео не в Lightroom, в плане
+AUDIO_DIRS = ("Аудио",)          # пока не читаются: в плане вместе с BirdNET
+
+
+def subdirs(folder: Path, names: tuple[str, ...]) -> list[Path]:
+    """Существующие подпапки дня с такими именами (без учёта регистра), в порядке names."""
+    want = [n.casefold() for n in names]
+    found: dict[str, Path] = {}
+    try:
+        for e in os.scandir(folder):
+            if e.is_dir() and e.name.casefold() in want:
+                found.setdefault(e.name.casefold(), Path(e.path))
+    except OSError:
+        return []
+    return [found[n] for n in want if n in found]
+
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
@@ -100,21 +123,22 @@ def day_folder(conn: sqlite3.Connection, day: sqlite3.Row, path_map: dict | None
 
 
 def find_gpx(folder: Path) -> list[Path]:
-    """GPX в папке дня и на уровень ниже."""
-    out: list[Path] = []
-    try:
-        for e in os.scandir(folder):
-            if e.is_file() and e.name.lower().endswith(".gpx"):
-                out.append(Path(e.path))
-            elif e.is_dir():
-                try:
-                    out += [Path(x.path) for x in os.scandir(e.path)
-                            if x.is_file() and x.name.lower().endswith(".gpx")]
-                except OSError:
-                    pass
-    except OSError:
-        return []
-    return sorted(out)
+    """GPX в корне папки дня и в «Трек» (с вложенными папками). Если файл с тем же
+    именем лежит в обоих местах, берётся из «Трек»."""
+    by_name: dict[str, Path] = {}
+    def scan(d: Path, deep: bool):
+        try:
+            for e in os.scandir(d):
+                if e.is_file() and e.name.lower().endswith(".gpx"):
+                    by_name[e.name.lower()] = Path(e.path)
+                elif deep and e.is_dir():
+                    scan(Path(e.path), True)
+        except OSError:
+            pass
+    scan(folder, False)
+    for d in subdirs(folder, TRACK_DIRS):
+        scan(d, True)
+    return sorted(by_name.values())
 
 
 # --- GPX ---------------------------------------------------------------------
@@ -202,6 +226,8 @@ def import_day(conn: sqlite3.Connection, day: sqlite3.Row, path_map: dict | None
         try:
             mtime = path.stat().st_mtime
             row = conn.execute("SELECT id, day_id, file_mtime FROM tracks WHERE file_path = ?", (str(path),)).fetchone()
+            if not row:
+                row = _moved_track(conn, list(by_date.values()), path)
             data = parse_gpx(path)
         except (OSError, ET.ParseError):
             continue
@@ -239,9 +265,21 @@ def import_day(conn: sqlite3.Connection, day: sqlite3.Row, path_map: dict | None
                          (wday, key, w["lat"], w["lon"], w["time"], w["name"], w["note"], w["photo"]))
             keys.add(key)
     res["finds"] = len(keys)
+    relink_photo_files(conn, main_id, folder)
     for d in touched:
         geotag_day(conn, d)
     return res
+
+
+def _moved_track(conn, day_ids: list[int], path: Path):
+    """Трек того же дня с тем же именем файла, которого больше нет на старом месте
+    (GPX перенесли из корня в «Трек»): обновим его, а не заведём второй."""
+    q = ",".join("?" * len(day_ids))
+    for r in conn.execute(f"SELECT id, day_id, file_mtime, file_path FROM tracks WHERE day_id IN ({q})", day_ids):
+        old = Path(r["file_path"])
+        if old.name.lower() == path.name.lower() and not old.exists():
+            return {"id": r["id"], "day_id": r["day_id"], "file_mtime": None}
+    return None
 
 
 def import_all(conn: sqlite3.Connection, cfg: dict) -> dict:
@@ -455,11 +493,37 @@ def exif_time(path: Path) -> datetime | None:
 
 
 def phone_photos(folder: Path) -> list[Path]:
-    """Снимки с телефона в папке дня и на два уровня ниже (NEF и прочее не трогаем)."""
+    """Снимки с телефона: «С телефона» и старое «Телефон», с вложенными папками."""
     files: list[Path] = []
-    for g in ("*", "*/*", "*/*/*"):
-        files += [p for p in folder.glob(g) if p.suffix.lower() in PHOTO_EXT and p.is_file()]
+    for d in subdirs(folder, PHONE_DIRS):
+        files += [p for p in d.rglob("*") if p.suffix.lower() in PHOTO_EXT and p.is_file()]
     return sorted(files)
+
+
+def relink_photo_files(conn: sqlite3.Connection, day_id: int, folder: Path) -> int:
+    """Ручные привязки фото к заметкам после переименования «Телефон» → «С телефона»:
+    путь, которого больше нет, переписывается на ту же картинку в другой папке телефона."""
+    if not folder or not folder.is_dir():
+        return 0
+    dirs = subdirs(folder, PHONE_DIRS)
+    fixed = 0
+    for fid, rel in conn.execute("SELECT f.id, f.photo_file FROM finds f WHERE f.photo_file IS NOT NULL "
+                                 "AND f.day_id IN (SELECT id FROM days WHERE source_folder = "
+                                 "(SELECT source_folder FROM days WHERE id = ?))", (day_id,)).fetchall():
+        if (folder / rel).is_file():
+            continue
+        head, _, tail = rel.replace("\\", "/").partition("/")
+        if head.casefold() not in [n.casefold() for n in PHONE_DIRS] or not tail:
+            continue
+        for d in dirs:
+            if (d / tail).is_file():
+                conn.execute("UPDATE finds SET photo_file = ? WHERE id = ?",
+                             ((d / tail).relative_to(folder).as_posix(), fid))
+                fixed += 1
+                break
+    if fixed:
+        conn.commit()
+    return fixed
 
 
 def photo_time(p: Path) -> datetime | None:
