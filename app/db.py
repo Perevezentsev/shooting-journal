@@ -137,6 +137,8 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     _migrate(conn)
     from . import field          # треки и находки (v0.6)
     field.ensure_schema(conn)
+    from . import species        # распознавание видов (torch здесь не импортируется)
+    species.ensure_schema(conn)
     conn.commit()
     return conn
 

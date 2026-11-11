@@ -1,0 +1,13 @@
+# Распознавание видов — необязательные зависимости. Журнал работает и без них.
+# Установка в тот же .venv:  pip install -r requirements-species.txt
+#
+# GTX 1060 — Pascal (sm_61): нужны сборки torch под CUDA 12.6.
+# Сборки cu128+ эту архитектуру уже не поддерживают.
+--extra-index-url https://download.pytorch.org/whl/cu126
+
+torch==2.14.1+cu126
+torchvision==0.29.1+cu126
+open_clip_torch>=4.2
+pybioclip>=2.1
+megadetector>=10.0
+pillow>=10
