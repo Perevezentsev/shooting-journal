@@ -142,6 +142,9 @@
                color: #fff; font-size: 10px; font-weight: 700; }
   .find-icon.open { background: #2f7d4f; }
   .fieldlink { font-size: 12px; margin-top: 2px; }
+  .runbadge { border: 1px solid var(--line); background: none; border-radius: 10px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
+  .runbadge:hover { border-color: var(--accent); }
+  #sp-run-info { font-size: 12px; }
   .daysp { font-size: 12px; margin-top: 3px; line-height: 1.5; color: var(--muted); }
   .daysp button.link { font-size: 12px; }
   .daysp button.link.on { font-weight: 700; }
@@ -275,6 +278,7 @@
   </nav>
   <div class="spacer"></div>
   <span id="status"></span>
+  <button class="tag runbadge hidden" id="sp-run-badge" title="Распознавание видов идёт в фоне — открыть «Виды»"></button>
   <span class="tag hidden" id="demo-badge" title="Выдуманные данные: scripts/make_demo.py">демо-данные</span>
   <button class="btn" id="sync">Обновить из каталога</button>
 </header>
@@ -408,6 +412,9 @@
       <button class="btn ghost small" id="sp-bulk">Показать</button>
       <button class="btn ghost small" id="sp-none-day" title="Все неразобранные «целые кадры» выбранного дня — без вида">Без вида — весь день</button>
       <button class="btn ghost small" id="sp-none-doubt" title="Неразобранные серии с сомнительной рамкой в текущем списке — с предпросмотром">Без вида — сомнительные…</button>
+      <span class="spacer"></span>
+      <span class="muted" id="sp-run-info"></span>
+      <button class="btn ghost small" id="sp-run" title="Распознать отобранные (★2+) кадры, которых ещё нет во «Видах». После «Обновить из каталога» запускается само">Распознать новые</button>
     </div>
     <div class="summary" id="sp-summary"></div>
     <div class="sp-keys">
@@ -1610,8 +1617,10 @@ $("#sync").addEventListener("click", async () => {
   const b = $("#sync"); b.disabled = true; status("Читаю каталог…", 0);
   try {
     const r = await api("/api/sync", { method: "POST" });
-    status(`Готово: ${r.days} дн. (новых ${r.created}, удалено ${r.removed}) · правил ${r.rules} · дублей убрано ${r.duplicates} · исключено ${r.excluded}`, 10000);
+    status(`Готово: ${r.days} дн. (новых ${r.created}, удалено ${r.removed}) · правил ${r.rules} · дублей убрано ${r.duplicates} · исключено ${r.excluded}${
+      r.species?.started ? ` · распознаю новые кадры: ${r.species.queued}` : ""}`, 10000);
     await loadAll();
+    if (r.species?.started) pollSpeciesRun();
   } catch (err) { status("Ошибка: " + err.message, 8000); }
   b.disabled = false;
 });
@@ -1897,7 +1906,7 @@ function spRenderSummary() {
   const c = sp.counts || {}, scope = spScopeText();
   $("#sp-summary").innerHTML = sp.frames ?
     `Серий в списке: <b>${sp.series.length}</b>${scope ? ` (${esc(scope)})` : ""} · всего серий: не разобрано <b>${c.todo ?? 0}</b>, подтверждено <b>${c.confirmed ?? 0}</b>, неопределимо <b>${c.unid ?? 0}</b>, «не то» <b>${c.rejected ?? 0}</b>, без вида <b>${c.none ?? 0}</b> · кадров распознано ${sp.frames}` :
-    `Распознавание ещё не запускалось: <code>python -m app.species run</code>`;
+    `Распознавание ещё не запускалось — кнопка «Распознать новые» справа или <code>python -m app.species run</code>`;
   $("#nav-species").textContent = c.todo || "";
 }
 
@@ -2423,6 +2432,59 @@ $("#sp-none-day").addEventListener("click", async () => {
   } catch (err) { status("Ошибка: " + err.message, 6000); }
 });
 
+// --- фоновое распознавание ---------------------------------------------------
+// Прогон — отдельный процесс (python -m app.species run); журнал только запускает,
+// останавливает и показывает прогресс из data/species_run.json.
+let spRun = { timer: null, was: false };
+const fmtDur = s => s >= 3600 ? `${Math.floor(s / 3600)} ч ${Math.round(s % 3600 / 60)} мин` : s >= 60 ? `${Math.round(s / 60)} мин` : `${Math.round(s)} с`;
+function spRunText(st) {
+  const p = [st.total ? `${st.done || 0}/${st.total}` : ""];
+  if (st.eta_s) p.push(`~${fmtDur(st.eta_s)}`);
+  if (st.gpu_temp != null) p.push(`GPU ${st.gpu_temp} °C`);
+  if (st.note) p.push(st.note);
+  return p.filter(Boolean).join(" · ");
+}
+async function pollSpeciesRun() {
+  clearTimeout(spRun.timer);
+  let st;
+  try { st = await api("/api/species/run"); } catch { return; }
+  const b = $("#sp-run"), info = $("#sp-run-info"), badge = $("#sp-run-badge");
+  badge.classList.toggle("hidden", !st.running);
+  if (st.running) {
+    const t = spRunText(st);
+    badge.textContent = `Виды: ${t}`;
+    info.textContent = `Распознавание: ${t}`;
+    b.textContent = "Остановить"; b.disabled = false; b.dataset.mode = "stop";
+    spRun.was = true;
+    spRun.timer = setTimeout(pollSpeciesRun, 3000);
+    return;
+  }
+  b.dataset.mode = "start";
+  b.textContent = st.queued ? `Распознать новые · ${st.queued}` : "Распознать новые";
+  b.disabled = !st.queued || !st.deps || st.demo;
+  b.title = st.demo ? "Демо-база: превью Lightroom к ней не относятся"
+    : !st.deps ? "Нужны зависимости распознавания: pip install -r requirements-species.txt"
+    : st.queued ? `Отобранных (★2+) кадров без распознавания: ${st.queued}. После «Обновить из каталога» запускается само` : "Все отобранные кадры уже распознаны";
+  const ago = st.finished_at ? new Date(st.finished_at * 1000).toLocaleString("ru", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "";
+  info.textContent = st.state === "done" && st.done ? `Последний прогон ${ago}: ${st.done} ${plural(st.done, "кадр", "кадра", "кадров")}${st.reason && st.reason !== "готово" ? ` (${st.reason})` : ""}`
+    : st.state === "stopped" ? (st.stop_requested ? "Прогон остановлен" : `Прогон прервался${st.reason ? `: ${st.reason}` : ""} — подробности в data/species_run.log`) : "";
+  if (spRun.was) {                           // прогон только что закончился — показать новые кадры
+    spRun.was = false;
+    status(st.state === "done" || st.stop_requested ? `Распознано: ${st.done || 0} ${plural(st.done || 0, "кадр", "кадра", "кадров")}${st.left ? `, в очереди ещё ${st.left}` : ""}`
+      : "Распознавание прервалось — см. data/species_run.log", 8000);
+    if (sp.loaded) { loadSpecies(true).catch(() => {}); loadSpeciesMeta().catch(() => {}); }
+  }
+}
+$("#sp-run").addEventListener("click", async () => {
+  const b = $("#sp-run"); b.disabled = true;
+  try {
+    if (b.dataset.mode === "stop") { await api("/api/species/run/stop", { method: "POST" }); status("Остановлю после текущей пачки", 5000); }
+    else { await api("/api/species/run", { method: "POST" }); status("Распознавание запущено", 4000); }
+  } catch (err) { status("Ошибка: " + err.message, 8000); }
+  pollSpeciesRun();
+});
+$("#sp-run-badge").addEventListener("click", () => showTab("species"));
+
 // Из карточки дня: «Виды» с фильтром по дню и виду (подтверждённые или неопределимые)
 async function openSpeciesFor(date, unid, sci) {
   showTab("species");
@@ -2474,6 +2536,7 @@ restoreFilters(FILTERS.days, "days-filters");
 restoreFilters(FILTERS.locs, "locs-filters");
 locSort = store.get("locs-sort", locSort);
 showTab(store.get("tab", "days"));
+pollSpeciesRun();
 api("/api/info").then(i => {
   if (!i.demo) return;
   $("#demo-badge").classList.remove("hidden");

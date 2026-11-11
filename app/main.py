@@ -19,7 +19,7 @@ from . import db
 from .locations import KINDS, merge_locations, set_day_locations
 from .lrcat import Photo
 from .sync import sync_catalog
-from . import field, inat, plan, review, weather
+from . import field, inat, plan, review, species, weather
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
@@ -60,6 +60,7 @@ def api_sync():
             if cfg.get("utc_offset_h") is not None:
                 field.UTC_OFFSET_H = cfg["utc_offset_h"]
             res["field"] = field.import_all(conn, cfg)
+            res["species"] = _species_auto(conn, cfg)
             return res
         except (FileNotFoundError, ValueError) as e:
             raise HTTPException(400, str(e))
@@ -67,6 +68,20 @@ def api_sync():
             # Полный текст ошибки — в терминал сервера, коротко — на страницу
             traceback.print_exc()
             raise HTTPException(500, f"{type(e).__name__}: {e}. Подробности в терминале сервера.")
+
+
+def _species_auto(conn, cfg: dict) -> dict:
+    """После синхронизации — распознать новые ★2+ в фоне (отключается "species_auto": false)."""
+    if not cfg.get("species_auto", True) or not species.deps_ok():
+        return {"started": False}
+    n = len(species.queue(conn))
+    if not n:
+        return {"started": False, "queued": 0}
+    try:
+        return {**species.start_run(), "queued": n}
+    except Exception as e:                      # синхронизация важнее распознавания
+        traceback.print_exc()
+        return {"started": False, "queued": n, "error": str(e)}
 
 
 # --- Дни ---------------------------------------------------------------------
@@ -301,6 +316,33 @@ def api_phone_photo(day_id: int, path: str):
 
 
 # --- Виды: разбор предсказаний ----------------------------------------------
+
+@app.get("/api/species/run")
+def api_species_run_status():
+    st = species.run_status()
+    with db.connect() as conn:
+        st["queued"] = len(species.queue(conn)) if not st["running"] else None
+        st["demo"] = db.is_demo(conn)
+    st["deps"] = species.deps_ok()
+    return st
+
+
+@app.post("/api/species/run")
+def api_species_run_start():
+    with db.connect() as conn:
+        if db.is_demo(conn):
+            raise HTTPException(400, "Демо-база: превью Lightroom к ней не относятся")
+    if not species.deps_ok():
+        raise HTTPException(400, "Не установлены зависимости распознавания: pip install -r requirements-species.txt")
+    if not CONFIG_PATH.exists():
+        raise HTTPException(400, "Нет config.json — не знаю, где каталог Lightroom")
+    return species.start_run()
+
+
+@app.post("/api/species/run/stop")
+def api_species_run_stop():
+    return species.stop_run()
+
 
 @app.get("/api/species/meta")
 def api_species_meta():

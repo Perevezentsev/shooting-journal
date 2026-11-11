@@ -19,6 +19,9 @@
 
 Прогон бережёт карту: перед каждой пачкой читает температуру GPU, при hot °C (78) ждёт
 остывания до cool °C (70) или пока температура не перестанет падать. Ctrl+C — аккуратная остановка после текущей пачки.
+Журнал запускает тот же прогон отдельным процессом (после «Обновить из каталога»
+или кнопкой во «Видах»; "species_auto": false в config.json — без автозапуска)
+и показывает прогресс из data/species_run.json.
 
 Тяжёлые библиотеки (torch, bioclip, megadetector) импортируются только внутри функций.
 """
@@ -54,6 +57,8 @@ MD_FILE = "md_v5a.0.1.pt"
 EMB_MODEL = "bioclip-2"
 EMB_DIR = DATA / "embeddings" / EMB_MODEL
 LOCK_FILE = DATA / "species.lock"
+RUN_STATUS = DATA / "species_run.json"     # прогресс прогона — его показывает журнал
+RUN_LOG = DATA / "species_run.log"         # вывод прогона, запущенного из журнала
 
 DETECT_LONG = 1600      # уровень превью для MegaDetector (обычно попадается 1032)
 MID_LONG = 2100         # промежуточный уровень для кропа (обычно 2064)
@@ -503,6 +508,72 @@ def _fmt_dur(s: float) -> str:
     return f"{s // 3600} ч {s % 3600 // 60:02d} мин" if s >= 3600 else f"{s // 60} мин {s % 60:02d} с"
 
 
+def write_run_status(**kw) -> None:
+    """Прогресс прогона в data/species_run.json: журнал читает его, кто бы ни запустил прогон."""
+    try:
+        cur = json.loads(RUN_STATUS.read_text(encoding="utf-8")) if kw.get("state") != "starting" else {}
+    except (OSError, ValueError):
+        cur = {}
+    cur.update(kw, pid=os.getpid(), updated_at=time.time())
+    tmp = RUN_STATUS.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cur, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(RUN_STATUS)
+
+
+def run_status() -> dict:
+    """Что с прогоном сейчас: running — процесс жив и ещё не закончил."""
+    try:
+        st = json.loads(RUN_STATUS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"state": "never", "running": False}
+    alive = False
+    if st.get("state") in ("starting", "running"):
+        try:
+            os.kill(int(st["pid"]), 0)
+            alive = True
+        except (OSError, KeyError, ValueError):
+            st["state"] = "stopped"
+            st["reason"] = "остановлено" if st.get("stop_requested") else "процесс завершился"
+    st["running"] = alive
+    return st
+
+
+def deps_ok() -> bool:
+    """Установлен ли requirements-species.txt: без него журнал работает, но не распознаёт."""
+    from importlib.util import find_spec
+    return all(find_spec(m) is not None for m in ("torch", "open_clip", "megadetector"))
+
+
+def start_run(args: tuple[str, ...] = ()) -> dict:
+    """Прогон отдельным процессом (из журнала): не держит сервер и переживает его перезапуск.
+    Вывод — в data/species_run.log, прогресс — в data/species_run.json."""
+    import threading
+    st = run_status()
+    if st["running"]:
+        return {"started": False, "reason": "уже идёт", **st}
+    DATA.mkdir(parents=True, exist_ok=True)
+    log = open(RUN_LOG, "w", encoding="utf-8")
+    proc = subprocess.Popen([sys.executable, "-m", "app.species", "run", *args], cwd=ROOT,
+                            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                            env={**os.environ, "PYTHONUNBUFFERED": "1"}, start_new_session=True)
+    log.close()
+    # Сразу «запускается» — до того как процесс сам допишет статус; wait() — чтобы не оставить зомби
+    RUN_STATUS.write_text(json.dumps({"state": "starting", "pid": proc.pid, "done": 0, "total": None,
+                                      "note": "запускаю", "started_at": time.time()}), encoding="utf-8")
+    threading.Thread(target=proc.wait, daemon=True).start()
+    return {"started": True, "pid": proc.pid}
+
+
+def stop_run() -> dict:
+    """Аккуратная остановка, как Ctrl+C: после текущей пачки."""
+    st = run_status()
+    if not st["running"]:
+        return {"stopped": False}
+    os.kill(int(st["pid"]), signal.SIGINT)
+    write_run_status(note="останавливаюсь после текущей пачки", stop_requested=True)
+    return {"stopped": True}
+
+
 class Progress:
     def __init__(self, total: int):
         self.total, self.done, self.t0 = total, 0, time.time()
@@ -521,6 +592,12 @@ class Progress:
         if note:
             parts.append(note)
         s = "  " + " · ".join(parts)
+        try:
+            write_run_status(state="running", done=self.done, total=self.total, rate=round(rate, 3),
+                             eta_s=round((self.total - self.done) / rate) if rate and self.done < self.total else None,
+                             gpu_temp=gpu["temp"] if gpu else None, note=note)
+        except OSError:
+            pass
         if self.tty:
             sys.stderr.write("\r" + s.ljust(self._w) + ("\n" if final else ""))
             sys.stderr.flush()
@@ -547,8 +624,10 @@ def run(conn: sqlite3.Connection, cfg: dict, *, all_photos=False, day=None, retr
     ids = queue(conn, all_photos, day, retry)
     if limit:
         ids = ids[:limit]
+    write_run_status(state="starting", done=0, total=len(ids), started_at=time.time(), note="загружаю модели")
     if not ids:
         print("Нечего обрабатывать: все кадры уже в species_crops.")
+        write_run_status(state="done", reason="нечего обрабатывать", left=0, finished_at=time.time())
         return {"done": 0}
 
     import torch
@@ -651,11 +730,13 @@ def run(conn: sqlite3.Connection, cfg: dict, *, all_photos=False, day=None, retr
     trip_days = [d for d, p in day_profiles(conn).items() if p != "home"]
     if prog.done and trip_days:
         print("Пересчитываю дни поездок их списком видов…")
+        write_run_status(note="пересчитываю дни поездок")
         rescore(conn, days=trip_days)
     left = len(queue(conn, all_photos, day, retry))
     summary = ", ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
     print(f"Обработано {prog.done} ({summary}). В очереди осталось {left}."
           + (" Продолжить: та же команда." if left else ""))
+    write_run_status(state="done", done=prog.done, reason=reason, counts=counts, left=left, finished_at=time.time(), note="")
     return {"done": prog.done, "counts": counts, "left": left, "reason": reason}
 
 
