@@ -1,7 +1,8 @@
 """Распознавание видов по превью Lightroom: MegaDetector → кроп → эмбеддинг BioCLIP-2.
 
 Запуск (нужен requirements-species.txt; журнал работает и без него):
-    python -m app.species run              # отобранные (★2+), свежие первыми
+    python -m app.species run              # отобранные (★2+) и все кадры новых дней, ★2+ первыми
+                                           # ("species_scope": "selected" в config.json — только ★2+)
     python -m app.species run --minutes 30 # частями: остановится сам через 30 минут
     python -m app.species status
     python -m app.species show 7842234
@@ -126,6 +127,10 @@ CREATE INDEX IF NOT EXISTS idx_species_confirm_day ON species_confirm(day_id);
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    # Граница «новых дней» для species_scope = "all": дни, которых ещё не было, когда это
+    # появилось, распознаются целиком, архив — только ★2+. Ставится один раз, пока дни есть.
+    conn.execute("INSERT OR IGNORE INTO meta(key, value) SELECT 'species_all_after_day', MAX(id) FROM days "
+                 "HAVING COUNT(*) > 0")
     cols = [r[1] for r in conn.execute("PRAGMA table_info(species_names)")]
     for col in ("family", "family_ru"):          # семейство iNat — для фильтра «Вид»
         if col not in cols:
@@ -445,9 +450,25 @@ def prepare(store, md, image_id: int, small) -> Item:
 
 # ---------- очередь и прогон ----------
 
-def queue(conn: sqlite3.Connection, all_photos=False, day=None, retry=False) -> list[int]:
-    where = ["1=1"] if all_photos else ["p.rating >= 2"]
+def all_after_day(conn) -> int | None:
+    """id последнего «архивного» дня: дни новее распознаются целиком (species_scope = "all")."""
+    r = conn.execute("SELECT value FROM meta WHERE key = 'species_all_after_day'").fetchone()
+    return int(r[0]) if r and r[0] is not None else None
+
+
+def queue(conn: sqlite3.Connection, all_photos=False, day=None, retry=False, scope="selected") -> list[int]:
+    """Очередь прогона: ★2+; при scope = "all" — ещё все кадры новых дней (см. all_after_day).
+    Отобранные — первыми. Кадр, получивший ★2 после прогона, второй раз не считается:
+    во «Видах» он просто переходит из «Неотобранных» в «Не разобрано»."""
     args: list = []
+    edge = all_after_day(conn) if scope == "all" else None
+    if all_photos:
+        where = ["1=1"]
+    elif edge is not None:
+        where = ["(p.rating >= 2 OR p.day_id > ?)"]
+        args.append(edge)
+    else:
+        where = ["p.rating >= 2"]
     if day:
         where.append("p.capture_time LIKE ?")
         args.append(f"{day}%")
@@ -455,7 +476,7 @@ def queue(conn: sqlite3.Connection, all_photos=False, day=None, retry=False) -> 
     sql = (f"SELECT p.image_id FROM photos p "
            f"WHERE {' AND '.join(where)} AND NOT EXISTS ("
            f"  SELECT 1 FROM species_crops c WHERE c.image_id = p.image_id AND {skip}) "
-           f"ORDER BY p.capture_time DESC")
+           f"ORDER BY p.rating >= 2 DESC, p.capture_time DESC")
     return [r[0] for r in conn.execute(sql, args)]
 
 
@@ -608,6 +629,7 @@ class Progress:
 
 def run(conn: sqlite3.Connection, cfg: dict, *, all_photos=False, day=None, retry=False,
         limit=None, minutes=None, batch=16, hot=78, cool=70, rest=0.0) -> dict:
+    scope = cfg.get("species_scope", "all")
     from .previews import PreviewStore, lrdata_for
 
     # Второй прогон параллельно не нужен: он делил бы и карту, и запись в базу.
@@ -621,7 +643,7 @@ def run(conn: sqlite3.Connection, cfg: dict, *, all_photos=False, day=None, retr
     # Журнал (sync, заметки) может писать в базу одновременно — подождём, а не упадём.
     conn.execute("PRAGMA busy_timeout = 30000")
 
-    ids = queue(conn, all_photos, day, retry)
+    ids = queue(conn, all_photos, day, retry, scope)
     if limit:
         ids = ids[:limit]
     write_run_status(state="starting", done=0, total=len(ids), started_at=time.time(), note="загружаю модели")
@@ -732,7 +754,7 @@ def run(conn: sqlite3.Connection, cfg: dict, *, all_photos=False, day=None, retr
         print("Пересчитываю дни поездок их списком видов…")
         write_run_status(note="пересчитываю дни поездок")
         rescore(conn, days=trip_days)
-    left = len(queue(conn, all_photos, day, retry))
+    left = len(queue(conn, all_photos, day, retry, scope))
     summary = ", ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
     print(f"Обработано {prog.done} ({summary}). В очереди осталось {left}."
           + (" Продолжить: та же команда." if left else ""))
@@ -1302,12 +1324,19 @@ def sample(conn, cfg: dict, out: Path, n=30, status="full", max_score=0.5, seed=
 
 # ---------- CLI ----------
 
+def _scope() -> str:
+    try:
+        return json.loads((ROOT / "config.json").read_text(encoding="utf-8")).get("species_scope", "all")
+    except (OSError, ValueError):
+        return "all"
+
+
 def _status(conn):
     rows = dict(conn.execute("SELECT status, COUNT(*) FROM species_crops GROUP BY status").fetchall())
     total = conn.execute("SELECT COUNT(*) FROM photos WHERE rating >= 2").fetchone()[0]
     print(f"Отобранных (★2+): {total}; обработано: {sum(rows.values())} "
           f"({', '.join(f'{k}: {v}' for k, v in sorted(rows.items())) or '—'}); "
-          f"в очереди: {len(queue(conn))}")
+          f"в очереди: {len(queue(conn, scope=_scope()))}")
     print(_gpu_text(gpu_stats()))
     top = conn.execute(
         "SELECT scientific, common, COUNT(*) n, ROUND(AVG(score), 2) FROM species_preds "
@@ -1335,7 +1364,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m app.species", description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run", help="прогон: детектор, кропы, эмбеддинги, топ-5")
-    r.add_argument("--all", action="store_true", help="все кадры, а не только ★2+")
+    r.add_argument("--all", action="store_true", help="все кадры всего архива, а не только ★2+ и новые дни")
     r.add_argument("--day", help="только день YYYY-MM-DD")
     r.add_argument("--retry", action="store_true", help="повторить ошибки и кадры без превью")
     r.add_argument("--limit", type=int, help="не больше N кадров за запуск")

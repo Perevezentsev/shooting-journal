@@ -74,7 +74,7 @@ def _species_auto(conn, cfg: dict) -> dict:
     """После синхронизации — распознать новые ★2+ в фоне (отключается "species_auto": false)."""
     if not cfg.get("species_auto", True) or not species.deps_ok():
         return {"started": False}
-    n = len(species.queue(conn))
+    n = len(species.queue(conn, scope=cfg.get("species_scope", "all")))
     if not n:
         return {"started": False, "queued": 0}
     try:
@@ -321,7 +321,8 @@ def api_phone_photo(day_id: int, path: str):
 def api_species_run_status():
     st = species.run_status()
     with db.connect() as conn:
-        st["queued"] = len(species.queue(conn)) if not st["running"] else None
+        st["queued"] = (len(species.queue(conn, scope=_cfg_soft().get("species_scope", "all")))
+                        if not st["running"] else None)
         st["demo"] = db.is_demo(conn)
     st["deps"] = species.deps_ok()
     return st

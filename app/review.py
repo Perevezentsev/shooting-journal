@@ -25,6 +25,7 @@ from pathlib import Path
 
 from . import species as sp
 
+SELECTED_RATING = 2         # ★2+ — отобран (как Photo.SELECTED_RATING)
 SERIES_GAP_S = 10
 SAME_SPECIES_GAP_S = 120
 NO_SUGGEST_BELOW = 0.5      # «животное не найдено» и топ-1 ниже — подсказки не показываем
@@ -132,19 +133,23 @@ def items(conn, *, day: str | None = None, loc: int | None = None, state: str = 
         empty = set()
 
     rows = conn.execute(
-        "SELECT p.image_id, p.day_id, p.capture_time, c.status AS kind, c.det_conf, d.date "
+        "SELECT p.image_id, p.day_id, p.capture_time, p.rating, c.status AS kind, c.det_conf, d.date "
         "FROM photos p JOIN species_crops c ON c.image_id = p.image_id "
         "JOIN days d ON d.id = p.day_id "
         "WHERE c.status IN ('crop', 'full') "
         + ("AND d.date = ? " if day else "")
         + "ORDER BY p.day_id, p.capture_time, p.image_id", ([day] if day else [])).fetchall()
 
-    series = _series(conn, rows, preds)
+    # Отобранные (★2+) и неотобранные склеиваются в серии порознь: неразобранная серия
+    # неотобранных — «unsel», в «Не разобрано» не попадает. Получил кадр ★2 — переедет сам.
+    sel = [r for r in rows if (r["rating"] or 0) >= SELECTED_RATING]
+    unsel = [r for r in rows if (r["rating"] or 0) < SELECTED_RATING]
+    series = [(True, s) for s in _series(conn, sel, preds)] + [(False, s) for s in _series(conn, unsel, preds)]
 
     taxa = _taxa(names)
     out = []
-    counts = {"todo": 0, "confirmed": 0, "unid": 0, "rejected": 0, "none": 0}
-    for frames in series:
+    counts = {"todo": 0, "unsel": 0, "confirmed": 0, "unid": 0, "rejected": 0, "none": 0}
+    for selected, frames in series:
         d = frames[0]["day_id"]
         if loc and loc not in day_locs.get(d, []):
             continue
@@ -169,7 +174,7 @@ def items(conn, *, day: str | None = None, loc: int | None = None, state: str = 
         k = kinds.pop() if len(kinds) == 1 else "mixed"
         decided = [fr["decision"] for fr in fr_out if fr["decision"]]
         if len(decided) < n:
-            st = "todo"
+            st = "todo" if selected else "unsel"
         elif any(x["status"] == "confirmed" for x in decided):
             st = "confirmed"
         elif any(x["status"] == "unid" for x in decided):
@@ -195,7 +200,7 @@ def items(conn, *, day: str | None = None, loc: int | None = None, state: str = 
             "id": frames[0]["image_id"], "rep": rep["image_id"], "n": n,
             "day_id": d, "date": frames[0]["date"], "time": (frames[0]["capture_time"] or "")[11:16],
             "places": [loc_names.get(l) for l in day_locs.get(d, []) if loc_names.get(l)],
-            "kind": k, "top": top,
+            "kind": k, "top": top, "selected": selected,
             "suggest": not (k == "full" and top1 < NO_SUGGEST_BELOW),
             "det": det, "doubt": doubt,
             # большинство кадров похоже на твои «без вида» — в конец списка, без метки
@@ -299,7 +304,7 @@ def meta(conn) -> dict:
     """Дни и места, где есть разобранные моделью кадры, — для фильтров."""
     days = [dict(r) for r in conn.execute(
         "SELECT d.id, d.date, COUNT(*) n, "
-        "SUM(CASE WHEN sc.image_id IS NULL THEN 1 ELSE 0 END) todo, "
+        "SUM(CASE WHEN sc.image_id IS NULL AND p.rating >= 2 THEN 1 ELSE 0 END) todo, "
         "(SELECT GROUP_CONCAT(l.name, ', ') FROM day_locations dl JOIN locations l ON l.id = dl.location_id "
         " WHERE dl.day_id = d.id) places "
         "FROM photos p JOIN species_crops c ON c.image_id = p.image_id AND c.status IN ('crop','full') "
@@ -313,38 +318,69 @@ def meta(conn) -> dict:
     return {"days": days, "locations": locs, "series_gap_s": SERIES_GAP_S}
 
 
+SEEN_MIN = 0.9      # неотобранный кадр с такой уверенностью топ-1 — «видел, без хорошего кадра»
+
+
 def day_species(conn) -> dict[int, list[dict]]:
-    """Подтверждённые виды по дням (день кадра сейчас, как в фильтре «Виды»):
-    {day_id: [{sci, ru, group, n, unid}]}. «Неопределимо» с группой — отдельной строкой
-    (unid=True, sci — род или семейство), без группы — sci=None."""
+    """Виды по дням (день кадра сейчас, как в фильтре «Виды»): {day_id: [{sci, ru, group, family,
+    family_ru, n, unid, seen}]}.
+    - подтверждённые;
+    - «неопределимо» с группой (unid, sci — род или семейство), без группы — sci=None;
+    - seen — «видел, без хорошего кадра»: неотобранные неразобранные кадры с топ-1 ≥ SEEN_MIN,
+      если этот вид в тот день не подтверждён. Без решения Алексея — в лайфлист не идут."""
     names = _names(conn)
     taxa = None
     out: dict[int, dict[tuple, dict]] = {}
+
+    def add(day_id, item, n):
+        key = (item["unid"], item["sci"] or item["ru"])
+        cur = out.setdefault(day_id, {}).get(key)
+        if cur:
+            cur["n"] += n
+        else:
+            out[day_id][key] = {**item, "n": n}
+
     for r in conn.execute(
             "SELECT p.day_id, sc.status, sc.scientific, sc.name_ru, COUNT(*) n FROM species_confirm sc "
             "JOIN photos p ON p.image_id = sc.image_id WHERE sc.status IN ('confirmed', 'unid') "
             "GROUP BY p.day_id, sc.status, sc.scientific, sc.name_ru"):
-        unid = r["status"] == "unid"
         sci, ru = r["scientific"], r["name_ru"]
-        if unid:
+        if r["status"] == "unid":
             if sci and taxa is None:
                 taxa = _taxa(names)
             t = (taxa or {}).get(sci) or {}
             item = {"sci": sci, "ru": ru or t.get("ru"), "group": t.get("group", "other") if sci else None,
-                    "unid": True}
+                    "family": t.get("family"), "family_ru": t.get("family_ru"), "unid": True, "seen": False}
         else:
             lab = _label(sci, names) if sci else {}
-            item = {"sci": lab.get("sci") or sci or ru, "ru": ru or lab.get("ru"),
-                    "group": lab.get("group", "other"), "unid": False}
-        key = (item["unid"], item["sci"] or item["ru"])
-        cur = out.setdefault(r["day_id"], {}).get(key)
-        if cur:
-            cur["n"] += r["n"]
-        else:
-            out[r["day_id"]][key] = {**item, "n": r["n"]}
-    order = list(GROUPS.values()) + ["other"]
-    rank = {g: i for i, g in enumerate(dict.fromkeys(order))}
-    return {d: sorted(v.values(), key=lambda x: (x["unid"] and not x["sci"], rank.get(x["group"], 99),
+            item = {"sci": lab.get("sci") or sci or ru, "ru": ru or lab.get("ru"), "group": lab.get("group", "other"),
+                    "family": lab.get("family"), "family_ru": lab.get("family_ru"), "unid": False, "seen": False}
+        add(r["day_id"], item, r["n"])
+
+    try:
+        empty = {r[0] for r in conn.execute("SELECT image_id FROM species_empty WHERE sim_none > sim_species")}
+    except Exception:
+        empty = set()
+    for r in conn.execute(
+            "SELECT p.day_id, p.image_id, sp.scientific, sp.common, sp.class_name FROM species_preds sp "
+            "JOIN photos p ON p.image_id = sp.image_id "
+            "JOIN species_crops c ON c.image_id = sp.image_id AND c.status IN ('crop', 'full') "
+            "WHERE sp.rank = 1 AND sp.score >= ? AND COALESCE(p.rating, 0) < ? "
+            "AND NOT EXISTS (SELECT 1 FROM species_confirm sc WHERE sc.image_id = p.image_id)",
+            (SEEN_MIN, SELECTED_RATING)):
+        if r["image_id"] in empty:
+            continue
+        lab = _label(r["scientific"], names, r["common"], r["class_name"])
+        if not lab.get("sci") or (False, lab["sci"]) in out.get(r["day_id"], {}) and \
+                not out[r["day_id"]][(False, lab["sci"])]["seen"]:
+            continue                                   # вид в этот день уже подтверждён
+        add(r["day_id"], {"sci": lab["sci"], "ru": lab.get("ru") or lab.get("en"), "group": lab.get("group", "other"),
+                          "family": lab.get("family"), "family_ru": lab.get("family_ru"),
+                          "unid": False, "seen": True}, 1)
+
+    order = list(dict.fromkeys(list(GROUPS.values()) + ["other"]))
+    rank = {g: i for i, g in enumerate(order)}
+    return {d: sorted(v.values(), key=lambda x: (x["seen"], x["unid"] and not x["sci"], rank.get(x["group"], 99),
                                                  x["unid"], -x["n"], x["ru"] or x["sci"] or ""))
             for d, v in out.items()}
 

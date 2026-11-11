@@ -6,5 +6,6 @@
     "Untitled Export",
     "/Экспорт/"
   ],
-  "species_auto": true
+  "species_auto": true,
+  "species_scope": "all"
 }

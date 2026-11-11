@@ -168,6 +168,7 @@
   .daysp button.link.on { font-weight: 700; }
   .daysp small { color: var(--muted); }
   .daysp .unid { font-style: italic; }
+  .daysp.seen, .daysp.seen button.link { color: var(--muted); }
   #placer .finds button.item { display: block; width: 100%; text-align: left; background: none; border: 0;
                                border-top: 1px solid var(--line); padding: 6px 0; font: inherit; color: inherit; cursor: pointer; }
   #placer .finds button.item:hover { color: var(--accent); }
@@ -247,6 +248,7 @@
   .sp-bulk-item img { width: 56px; height: 56px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
   .sp-card.none { opacity: .6; }
   .sp-card.unid { border-style: dashed; }
+  .sp-img .badge.unsel { top: auto; bottom: 6px; left: 6px; }
   .sp-dec.unid { color: var(--warm); }
   .sp-search .results .hint { display: block; color: var(--muted); font-size: 11px; }
   .sp-img .empty { left: 6px; top: auto; bottom: 6px; background: rgba(120,90,40,.75); }
@@ -314,7 +316,11 @@
         <option value="trip">Поездки</option>
         <option value="other">Не места</option>
       </select>
-      <select id="d-species"><option value="">Все виды</option></select>
+      <span class="sp-combo hidden" id="d-sp-box">
+        <input type="search" id="d-sp-q" placeholder="Вид: все" autocomplete="off">
+        <input type="hidden" id="d-species">
+        <div class="sp-combo-list hidden" id="d-sp-list"></div>
+      </span>
       <label><input type="checkbox" id="d-noloc"> без места</label>
       <label><input type="checkbox" id="d-nocoord"> без координат</label>
       <label><input type="checkbox" id="d-notes"> с заметками</label>
@@ -412,6 +418,7 @@
     <div class="toolbar">
       <select id="sp-state">
         <option value="todo">Не разобрано</option>
+        <option value="unsel" title="Распознанные кадры без ★2 — из новых дней. В «Не разобрано» не попадают; поставишь ★2 в Lightroom — переедут туда сами">Неотобранные</option>
         <option value="confirmed">Подтверждено</option>
         <option value="unid">Неопределимо</option>
         <option value="rejected">«Не то»</option>
@@ -555,6 +562,42 @@ async function loadAll() {
   renderMap();
 }
 
+// Поле «Вид» с поиском — общее для «Видов» и «Дней». Значение — строка-фильтр
+// (sp:латынь, fam:семейство, grp:группа, unid:группа, q:текст), его хранит вызывающий:
+// value() — текущее, label() — текст в поле, options(stem, text) — {top, sections, empty},
+// где пункт — {v, label (HTML), n}; onSet(v) — выбран пункт.
+function speciesCombo({ input, list, value, label, options, onSet }) {
+  const $i = $(input), $l = $(list);
+  const btn = (x, cur) => `<button data-v="${esc(x.v)}" class="${x.v === cur ? "on" : ""}"><span>${x.label}</span><i>${x.n ?? ""}</i></button>`;
+  const sync = () => { $i.value = label(); $i.classList.toggle("on", !!value()); };
+  function draw() {
+    const cur = value(), text = $i.value.trim();
+    const typing = text && norm(text) !== norm(label());
+    const o = options(typing ? spStem(text) : "", text);
+    $l.innerHTML = o.top.map(x => btn(x, cur)).join("") + o.sections.filter(sec => sec.items.length).map(sec =>
+      (sec.title ? `<div class="sp-combo-h">${sec.title}</div>` : "") + sec.items.map(x => btn(x, cur)).join("")).join("")
+      + (o.empty ? `<div class="empty">${o.empty}</div>` : "");
+    $l.classList.remove("hidden");
+  }
+  function set(v) { $l.classList.add("hidden"); onSet(v); sync(); }
+  $i.addEventListener("focus", () => { $i.select(); draw(); });
+  $i.addEventListener("input", () => { if (!$i.value) set(""); else draw(); });
+  $i.addEventListener("keydown", e => {
+    if (e.key === "Escape") { $l.classList.add("hidden"); $i.blur(); }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const b = $l.querySelector("button[data-v]");
+      if (b) { set(b.dataset.v); $i.blur(); }
+    }
+  });
+  $l.addEventListener("mousedown", e => {
+    const b = e.target.closest("button[data-v]");
+    if (b) { e.preventDefault(); set(b.dataset.v); $i.blur(); }
+  });
+  $i.addEventListener("blur", () => setTimeout(() => { $l.classList.add("hidden"); sync(); }, 150));
+  return { draw, sync };
+}
+
 // --- ДНИ ---------------------------------------------------------------------
 function fillYears() {
   const sel = $("#d-year"), cur = sel.value || store.get("days-filters", {})["d-year"] || "";
@@ -571,35 +614,80 @@ const DSP_GROUPS = [["birds", "Птицы"], ["mammals", "Млекопитающ
 const GROUP_TITLE = Object.fromEntries(DSP_GROUPS);
 const dspKey = x => (x.unid ? "unid:" : "sp:") + (x.sci || x.ru || "");
 const dspName = x => x.unid ? (x.ru || x.sci ? `${x.ru || x.sci} sp.` : "неопределимо") : (x.ru || x.sci);
+// Все виды из карточек дней — для поля «Вид»: ключ → {…, days, conf} (в скольких днях, из них подтверждён)
+let dspAll = new Map();
 function fillDaySpecies() {
-  const sel = $("#d-species"), cur = sel.value || store.get("days-filters", {})["d-species"] || "";
-  const all = new Map();
+  dspAll = new Map();
   for (const d of days) for (const x of d.species || []) {
     if (x.unid && !x.sci && !x.ru) continue;
-    const k = dspKey(x), o = all.get(k) || { ...x, days: 0 };
-    o.days++; all.set(k, o);
+    const k = dspKey(x), o = dspAll.get(k) || { ...x, days: 0, conf: 0 };
+    o.days++; if (!x.seen) { o.conf++; o.seen = false; o.ru = o.ru || x.ru; }
+    dspAll.set(k, o);
   }
-  const list = [...all.entries()].sort((a, b) => a[1].unid - b[1].unid || dspName(a[1]).localeCompare(dspName(b[1]), "ru"));
-  sel.innerHTML = `<option value="">Все виды</option>` + DSP_GROUPS.map(([g, title]) => {
-    const opts = list.filter(([, x]) => (x.group || "other") === g);
-    return opts.length ? `<optgroup label="${title}">${opts.map(([k, x]) =>
-      `<option value="${esc(k)}">${esc(dspName(x))} · ${x.days} ${plural(x.days, "день", "дня", "дней")}</option>`).join("")}</optgroup>` : "";
-  }).join("");
-  sel.classList.toggle("hidden", !all.size);
-  sel.value = all.has(cur) ? cur : "";
+  $("#d-sp-box").classList.toggle("hidden", !dspAll.size);
 }
+// Фильтр «Вид» в «Днях»: sp:латынь (подтверждён или «видел»), unid:группа, grp:группа, fam:семейство, q:текст
+function dspParse(v) { const i = (v || "").indexOf(":"); return i < 0 ? null : { type: v.slice(0, i), val: v.slice(i + 1) }; }
+function dspHit(x, f) {
+  if (x.unid && !x.sci && !x.ru) return false;
+  if (f.type === "sp") return !x.unid && x.sci === f.val;
+  if (f.type === "unid") return x.unid && (x.sci || x.ru || "") === f.val;
+  if (f.type === "grp") return (x.group || "other") === f.val;
+  if (f.type === "fam") return x.family === f.val;
+  const st = spStem(f.val);
+  return [x.ru, x.sci, x.family_ru, x.family, GROUP_TITLE[x.group]].some(t => norm(t).includes(st));
+}
+const dayHasSpecies = (d, f) => (d.species || []).some(x => dspHit(x, f));
+function dspLabel() {
+  const f = dspParse($("#d-species").value);
+  if (!f) return "";
+  if (f.type === "q") return f.val;
+  if (f.type === "grp") return GROUP_TITLE[f.val] || f.val;
+  if (f.type === "fam") { const x = [...dspAll.values()].find(x => x.family === f.val); return x?.family_ru || f.val; }
+  const x = dspAll.get(`${f.type}:${f.val}`);
+  return x ? dspName(x) : f.val;
+}
+function dspOptions(stem, text) {
+  const nDays = f => days.filter(d => dayHasSpecies(d, f)).length;
+  const hit = x => !stem || dspHit(x, { type: "q", val: stem });
+  const list = [...dspAll.entries()].filter(([, x]) => hit(x)).sort((a, b) => b[1].days - a[1].days || dspName(a[1]).localeCompare(dspName(b[1]), "ru"));
+  const groups = DSP_GROUPS.filter(([g, t]) => (!stem || norm(t).includes(stem) || list.some(([, x]) => x.group === g)) && [...dspAll.values()].some(x => x.group === g));
+  const fams = new Map();
+  if (stem) for (const x of dspAll.values()) if (x.family && (hit(x) || norm(x.family_ru).includes(stem))) fams.set(x.family, x);
+  const dd = n => n;
+  return {
+    top: [stem ? { v: `q:${text}`, label: `<b>Все по запросу «${esc(text)}»</b> <small>${list.length} ${plural(list.length, "вид", "вида", "видов")}</small>`, n: nDays({ type: "q", val: text }) }
+               : { v: "", label: "Все виды", n: days.filter(d => (d.species || []).length).length }],
+    sections: [
+      { title: "Группы", items: groups.map(([g, t]) => ({ v: `grp:${g}`, label: esc(t), n: dd(nDays({ type: "grp", val: g })) })) },
+      { title: "Семейства", items: [...fams.values()].slice(0, 8).map(x => ({ v: `fam:${x.family}`, label: `${esc(x.family_ru || x.family)}${x.family_ru ? ` <small>${esc(x.family)}</small>` : ""}`, n: nDays({ type: "fam", val: x.family }) })) },
+      { title: "Виды", items: list.map(([k, x]) => ({ v: k, n: x.days,
+          label: `${esc(dspName(x))}${x.sci && !x.unid && x.ru ? ` <small>${esc(x.sci)}</small>` : ""}${x.conf ? "" : ` <small>видел</small>`}` })) },
+    ],
+    empty: stem && !list.length ? "Нет таких видов в днях" : "",
+  };
+}
+const dCombo = speciesCombo({
+  input: "#d-sp-q", list: "#d-sp-list",
+  value: () => $("#d-species").value, label: dspLabel, options: dspOptions,
+  onSet: v => { $("#d-species").value = v; renderDays(); },
+});
 function daySpeciesHtml(d, fk) {
-  const list = (d.species || []).filter(x => !x.unid || x.sci || x.ru);
+  const f = dspParse(fk);
+  const seen = (d.species || []).filter(x => x.seen);
+  const list = (d.species || []).filter(x => !x.seen && (!x.unid || x.sci || x.ru));
   const rest = (d.species || []).filter(x => x.unid && !x.sci && !x.ru).reduce((s, x) => s + x.n, 0);
-  if (!list.length && !rest) return "";
+  const seenHtml = seen.length ? `<div class="daysp seen" title="Неотобранные кадры (без ★2), где модель уверена в виде ≥ 0.9. Не подтверждено — в лайфлист не идёт">видел, без хорошего кадра: ${
+    seen.map(x => `<button class="link${f && dspHit(x, f) ? " on" : ""}" data-dsp="${esc(dspKey(x))}" data-dsp-seen="1">${esc(dspName(x))}</button>`).join(", ")}</div>` : "";
+  if (!list.length && !rest) return seenHtml;
   const open = dspOpen.has(d.id), LIM = 8;
   const shown = open || list.length <= LIM + 2 ? list : list.slice(0, LIM);
-  const a = shown.map(x => `<button class="link${x.unid ? " unid" : ""}${dspKey(x) === fk ? " on" : ""}" data-dsp="${esc(dspKey(x))}"
+  const a = shown.map(x => `<button class="link${x.unid ? " unid" : ""}${f && dspHit(x, f) ? " on" : ""}" data-dsp="${esc(dspKey(x))}"
       title="${esc(x.sci || "")} · ${x.n} ${plural(x.n, "кадр", "кадра", "кадров")} — открыть во «Видах»">${esc(dspName(x))}</button>${
       x.n > 1 ? ` <small>×${x.n}</small>` : ""}`);
   if (shown.length < list.length) a.push(`<button class="link" data-dsp-more="${d.id}">ещё ${list.length - shown.length}</button>`);
   if (rest) a.push(`<button class="link unid" data-dsp="unid:" title="Неопределимо без группы — открыть во «Видах»">неопределимо</button>${rest > 1 ? ` <small>×${rest}</small>` : ""}`);
-  return `<div class="daysp">${list.length ? `${list.length} ${plural(list.length, "вид", "вида", "видов")}: ` : ""}${a.join(", ")}</div>`;
+  return `<div class="daysp">${list.length ? `${list.length} ${plural(list.length, "вид", "вида", "видов")}: ` : ""}${a.join(", ")}</div>${seenHtml}`;
 }
 
 function dayMatches(d, f) {
@@ -610,7 +698,8 @@ function dayMatches(d, f) {
   if (f["d-noloc"] && d.locations.length) return false;
   if (f["d-nocoord"] && !d.locations.some(l => l.kind === "place" && l.lat == null)) return false;
   if (f["d-notes"] && !(d.notes || "").trim()) return false;
-  if (f["d-species"] && !(d.species || []).some(x => dspKey(x) === f["d-species"])) return false;
+  const fsp = dspParse(f["d-species"]);
+  if (fsp && !dayHasSpecies(d, fsp)) return false;
   const q = norm(f["d-q"].trim());
   if (q) {
     const hay = norm([d.locations.map(l => l.name).join(" "), d.source_name, d.source_folder, d.notes, d.date, dmy(d.date),
@@ -640,6 +729,7 @@ function openPlaceDays(type, id) {
 
 function renderDays() {
   renderLocChip();
+  if (document.activeElement !== $("#d-sp-q")) dCombo.sync();
   const f = readFilters(FILTERS.days);
   store.set("days-filters", f);
   const q = norm(f["d-q"].trim());
@@ -1883,6 +1973,9 @@ const SP_GROUP_RU = { birds: "птицы", mammals: "млекопитающие"
 const SP_PAGE = 60;
 let sp = { series: [], cards: [], shown: 0, sel: 0, loaded: false, undo: [], expanded: new Set(), box: null, revealed: new Set() };
 
+// Неразобранная серия: отобранная — «todo», без ★2 — «unsel» (своя вкладка статуса)
+const spOpenState = s => s.selected === false ? "unsel" : "todo";
+const spIsOpen = s => s.state === "todo" || s.state === "unsel";
 const spName = t => t ? (t.ru || t.en || t.sci || "") : "";
 const spConf = s => `<i class="${s >= 0.9 ? "hi" : s < 0.5 ? "lo" : ""}">${s.toFixed(2)}</i>`;
 
@@ -1966,7 +2059,7 @@ function spApplyLocal(keepSel = false) {
 function spRenderSummary() {
   const c = sp.counts || {}, scope = spScopeText();
   $("#sp-summary").innerHTML = sp.frames ?
-    `Серий в списке: <b>${sp.series.length}</b>${scope ? ` (${esc(scope)})` : ""} · всего серий: не разобрано <b>${c.todo ?? 0}</b>, подтверждено <b>${c.confirmed ?? 0}</b>, неопределимо <b>${c.unid ?? 0}</b>, «не то» <b>${c.rejected ?? 0}</b>, без вида <b>${c.none ?? 0}</b> · кадров распознано ${sp.frames}` :
+    `Серий в списке: <b>${sp.series.length}</b>${scope ? ` (${esc(scope)})` : ""} · всего серий: не разобрано <b>${c.todo ?? 0}</b>, подтверждено <b>${c.confirmed ?? 0}</b>, неопределимо <b>${c.unid ?? 0}</b>, «не то» <b>${c.rejected ?? 0}</b>, без вида <b>${c.none ?? 0}</b>${c.unsel ? `, неотобранных <b>${c.unsel}</b>` : ""} · кадров распознано ${sp.frames}` :
     `Распознавание ещё не запускалось — кнопка «Распознать новые» справа или <code>python -m app.species run</code>`;
   $("#nav-species").textContent = c.todo || "";
 }
@@ -1995,49 +2088,26 @@ function spOptions(stem) {
   const byN = (a, b) => b.n - a.n || (a.ru || a.sci || a.family).localeCompare(b.ru || b.sci || b.family, "ru");
   return { species: [...species.values()].sort(byN), fams: [...fams.values()].sort(byN), seriesHit };
 }
-function spComboDraw() {
-  const f = spFilterVal(), text = $("#sp-sp-q").value.trim();
-  const typing = text && !(f && norm(text) === norm(spInputText(f)));
-  const stem = typing ? spStem(text) : "";
+function spComboOptions(stem, text) {
   const o = spOptions(stem);
-  const cur = f ? `${f.type}:${f.val}` : "";
-  const btn = (v, label, n, cls = "") => `<button data-v="${esc(v)}" class="${v === cur ? "on" : ""} ${cls}"><span>${label}</span><i>${n}</i></button>`;
-  let html = stem
-    ? btn(`q:${text}`, `<b>Все по запросу «${esc(text)}»</b> <small>${o.species.length} ${plural(o.species.length, "вид", "вида", "видов")}</small>`, o.seriesHit)
-    : btn("", "Все виды", (sp.all || []).filter(s => spPool(s).length).length);
-  if (o.fams.length) html += `<div class="sp-combo-h">Семейства</div>` +
-    o.fams.slice(0, 8).map(x => btn(`fam:${x.family}`, `${esc(x.ru || x.family)}${x.ru ? ` <small>${esc(x.family)}</small>` : ""}`, x.n)).join("");
-  if (stem && o.species.length) html += `<div class="sp-combo-h">Виды</div>`;
-  html += o.species.map(x => btn(`sp:${x.sci}`, `${esc(x.ru || x.sci)}${x.ru ? ` <small>${esc(x.sci)}</small>` : ""}`, x.n)).join("");
-  if (stem && !o.species.length) html += `<div class="empty">Нет видов в выборке${$("#sp-top3").checked ? "" : " — попробуй «искать в топ-3»"}</div>`;
-  $("#sp-sp-list").innerHTML = html;
-  $("#sp-sp-list").classList.remove("hidden");
+  const item = (v, label, n) => ({ v, label, n });
+  return {
+    top: [stem ? item(`q:${text}`, `<b>Все по запросу «${esc(text)}»</b> <small>${o.species.length} ${plural(o.species.length, "вид", "вида", "видов")}</small>`, o.seriesHit)
+               : item("", "Все виды", (sp.all || []).filter(s => spPool(s).length).length)],
+    sections: [
+      { title: "Семейства", items: o.fams.slice(0, 8).map(x => item(`fam:${x.family}`, `${esc(x.ru || x.family)}${x.ru ? ` <small>${esc(x.family)}</small>` : ""}`, x.n)) },
+      { title: stem ? "Виды" : "", items: o.species.map(x => item(`sp:${x.sci}`, `${esc(x.ru || x.sci)}${x.ru ? ` <small>${esc(x.sci)}</small>` : ""}`, x.n)) },
+    ],
+    empty: stem && !o.species.length ? `Нет видов в выборке${$("#sp-top3").checked ? "" : " — попробуй «искать в топ-3»"}` : "",
+  };
 }
-function spComboSet(v) {
-  $("#sp-species").value = v;
-  $("#sp-sp-q").value = spInputText(spFilterVal());
-  $("#sp-sp-list").classList.add("hidden");
-  spSaveFilters();
-  spApplyLocal();
-}
-$("#sp-sp-q").addEventListener("focus", () => { $("#sp-sp-q").select(); spComboDraw(); });
-$("#sp-sp-q").addEventListener("input", () => { if (!$("#sp-sp-q").value) spComboSet(""); else spComboDraw(); });
-$("#sp-sp-q").addEventListener("keydown", e => {
-  if (e.key === "Escape") { $("#sp-sp-list").classList.add("hidden"); $("#sp-sp-q").blur(); }
-  if (e.key === "Enter") {
-    e.preventDefault();
-    const b = $("#sp-sp-list button[data-v]");
-    if (b) { spComboSet(b.dataset.v); $("#sp-sp-q").blur(); }
-  }
+const spCombo = speciesCombo({
+  input: "#sp-sp-q", list: "#sp-sp-list",
+  value: () => { const f = spFilterVal(); return f ? `${f.type}:${f.val}` : ""; },
+  label: () => spInputText(spFilterVal()),
+  options: spComboOptions,
+  onSet: v => { $("#sp-species").value = v; spSaveFilters(); spApplyLocal(); },
 });
-$("#sp-sp-list").addEventListener("mousedown", e => {
-  const b = e.target.closest("button[data-v]");
-  if (b) { e.preventDefault(); spComboSet(b.dataset.v); $("#sp-sp-q").blur(); }
-});
-$("#sp-sp-q").addEventListener("blur", () => setTimeout(() => {
-  $("#sp-sp-list").classList.add("hidden");
-  $("#sp-sp-q").value = spInputText(spFilterVal());
-}, 150));
 for (const id of ["sp-group", "sp-top3"]) $("#" + id).addEventListener("change", () => {
   spSaveFilters();
   spApplyLocal();
@@ -2053,7 +2123,7 @@ function buildCards() {
         top: fr.top, kind: fr.kind, time: fr.time,
         suggest: !(fr.kind === "full" && (fr.top[0]?.score ?? 0) < 0.5),
         doubt: fr.kind === "crop" && fr.det != null && fr.det < 0.5, det: fr.det, empty: fr.empty,
-        state: fr.decision ? fr.decision.status : "todo", decision: fr.decision,
+        state: fr.decision ? fr.decision.status : spOpenState(s), decision: fr.decision,
       }));
     } else {
       sp.cards.push({ key: "s" + s.id, series: s, ids: s.frames.map(fr => fr.id), rep: s.rep, n: s.n,
@@ -2095,7 +2165,8 @@ function spCardHtml(c, i) {
     <div class="sp-img"><img loading="lazy" src="/api/species/crop/${c.rep}" alt="">
       ${c.n > 1 ? `<span class="badge n" title="Серия: ${c.n} кадров подряд. E — развернуть">×${c.n}</span>` : ""}
       ${c.kind === "full" ? `<span class="badge kind">весь кадр</span>` : c.doubt ? `<span class="badge kind">рамка ${(c.det ?? 0).toFixed(2)}</span>` : ""}
-      ${c.empty && c.state === "todo" ? `<span class="badge empty" title="Похоже на кадры, которые ты отметил «без вида». Только сортировка — решение за тобой">похоже на «без вида»</span>` : ""}</div>
+      ${s.selected === false ? `<span class="badge unsel" title="Кадр без ★2 — в «Не разобрано» не попадает">без ★</span>` : ""}
+      ${c.empty && spIsOpen(c) ? `<span class="badge empty" title="Похоже на кадры, которые ты отметил «без вида». Только сортировка — решение за тобой">похоже на «без вида»</span>` : ""}</div>
     <div class="sp-body">
       <div class="sp-when"><button class="daylink" data-day="${s.day_id}">${dmy(s.date)}</button>
         <span>${c.time}${s.places.length ? " · " + esc(s.places.join(", ")) : ""}</span></div>
@@ -2189,7 +2260,7 @@ async function spDecide(i, action, t = null, source = null) {
 function spRecount(s) {
   const dec = s.frames.map(fr => fr.decision).filter(Boolean);
   const old = s.state;
-  s.state = dec.length < s.frames.length ? "todo" : dec.some(d => d.status === "confirmed") ? "confirmed"
+  s.state = dec.length < s.frames.length ? spOpenState(s) : dec.some(d => d.status === "confirmed") ? "confirmed"
     : dec.some(d => d.status === "unid") ? "unid" : dec.every(d => d.status === "none") ? "none" : "rejected";
   const kinds = new Set(dec.filter(d => d.status === "confirmed").map(d => d.sci + "|" + d.ru));
   s.decision = dec.length === s.frames.length && kinds.size <= 1 ? dec[0] : null;
@@ -2445,7 +2516,7 @@ function spBulkPreview() {
   // (средняя вероятность по серии ≥ порога). Иначе — топ-1, если он подходит под фильтр
   // и одинаков у всех кадров серии. Сомнительные рамки массово не подтверждаем.
   const f = spFilterVal(), g = $("#sp-group").value;
-  const cand = sp.series.filter(s => s.state === "todo" && s.suggest && !s.doubt).map(s => {
+  const cand = sp.series.filter(s => spIsOpen(s) && s.suggest && !s.doubt).map(s => {
     let t = null;
     if (f?.type === "sp") t = (s.cands || []).find(c => c.sci === f.val) || (s.top[0]?.sci === f.val ? s.top[0] : null);
     else if (s.uniform && s.top[0] && spHit(s.top[0], f) && (!g || s.top[0].group === g)) t = s.top[0];
@@ -2462,7 +2533,7 @@ function spBulkPreview() {
   });
 }
 $("#sp-none-doubt").addEventListener("click", () => {
-  const list = sp.series.filter(s => s.state === "todo" && s.doubt);
+  const list = sp.series.filter(s => spIsOpen(s) && s.doubt);
   if (!list.length) { status("В текущем списке нет неразобранных серий с сомнительной рамкой (фильтр «Сомнительная рамка» покажет их все)", 5000); return; }
   spPreview({
     title: `Без вида: ${spSeriesWord(list.length)} с сомнительной рамкой${spScope()}`,
@@ -2484,7 +2555,7 @@ $("#sp-none-day").addEventListener("click", async () => {
     status("Это «целые кадры» дня. Посмотри и нажми «Без вида — весь день» ещё раз", 6000);
     return;
   }
-  const todo = sp.series.filter(s => s.state === "todo" && s.kind === "full");
+  const todo = sp.series.filter(s => spIsOpen(s) && s.kind === "full");
   if (!todo.length) { status("Неразобранных «целых кадров» в этот день нет"); return; }
   const n = todo.reduce((a, s) => a + s.frames.filter(fr => !fr.decision).length, 0);
   if (!confirm(`${dmy(f["sp-day"])}${spScope().replace(/&quot;/g, '"')}: отметить «без вида» ${todo.length} ${plural(todo.length, "серию", "серии", "серий")} (${n} ${plural(n, "кадр", "кадра", "кадров")})? Z — отменить.`)) return;
