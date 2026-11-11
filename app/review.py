@@ -313,6 +313,42 @@ def meta(conn) -> dict:
     return {"days": days, "locations": locs, "series_gap_s": SERIES_GAP_S}
 
 
+def day_species(conn) -> dict[int, list[dict]]:
+    """Подтверждённые виды по дням (день кадра сейчас, как в фильтре «Виды»):
+    {day_id: [{sci, ru, group, n, unid}]}. «Неопределимо» с группой — отдельной строкой
+    (unid=True, sci — род или семейство), без группы — sci=None."""
+    names = _names(conn)
+    taxa = None
+    out: dict[int, dict[tuple, dict]] = {}
+    for r in conn.execute(
+            "SELECT p.day_id, sc.status, sc.scientific, sc.name_ru, COUNT(*) n FROM species_confirm sc "
+            "JOIN photos p ON p.image_id = sc.image_id WHERE sc.status IN ('confirmed', 'unid') "
+            "GROUP BY p.day_id, sc.status, sc.scientific, sc.name_ru"):
+        unid = r["status"] == "unid"
+        sci, ru = r["scientific"], r["name_ru"]
+        if unid:
+            if sci and taxa is None:
+                taxa = _taxa(names)
+            t = (taxa or {}).get(sci) or {}
+            item = {"sci": sci, "ru": ru or t.get("ru"), "group": t.get("group", "other") if sci else None,
+                    "unid": True}
+        else:
+            lab = _label(sci, names) if sci else {}
+            item = {"sci": lab.get("sci") or sci or ru, "ru": ru or lab.get("ru"),
+                    "group": lab.get("group", "other"), "unid": False}
+        key = (item["unid"], item["sci"] or item["ru"])
+        cur = out.setdefault(r["day_id"], {}).get(key)
+        if cur:
+            cur["n"] += r["n"]
+        else:
+            out[r["day_id"]][key] = {**item, "n": r["n"]}
+    order = list(GROUPS.values()) + ["other"]
+    rank = {g: i for i, g in enumerate(dict.fromkeys(order))}
+    return {d: sorted(v.values(), key=lambda x: (x["unid"] and not x["sci"], rank.get(x["group"], 99),
+                                                 x["unid"], -x["n"], x["ru"] or x["sci"] or ""))
+            for d, v in out.items()}
+
+
 # ---------- поиск вида ----------
 
 def _norm(s: str | None) -> str:

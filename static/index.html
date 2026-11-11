@@ -142,6 +142,11 @@
                color: #fff; font-size: 10px; font-weight: 700; }
   .find-icon.open { background: #2f7d4f; }
   .fieldlink { font-size: 12px; margin-top: 2px; }
+  .daysp { font-size: 12px; margin-top: 3px; line-height: 1.5; color: var(--muted); }
+  .daysp button.link { font-size: 12px; }
+  .daysp button.link.on { font-weight: 700; }
+  .daysp small { color: var(--muted); }
+  .daysp .unid { font-style: italic; }
   #placer .finds button.item { display: block; width: 100%; text-align: left; background: none; border: 0;
                                border-top: 1px solid var(--line); padding: 6px 0; font: inherit; color: inherit; cursor: pointer; }
   #placer .finds button.item:hover { color: var(--accent); }
@@ -286,6 +291,7 @@
         <option value="trip">Поездки</option>
         <option value="other">Не места</option>
       </select>
+      <select id="d-species"><option value="">Все виды</option></select>
       <label><input type="checkbox" id="d-noloc"> без места</label>
       <label><input type="checkbox" id="d-nocoord"> без координат</label>
       <label><input type="checkbox" id="d-notes"> с заметками</label>
@@ -427,6 +433,7 @@ const $ = s => document.querySelector(s);
 const MONTHS = ["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
 const KIND_LABEL = { place: "место", trip: "поездка", other: "не место" };
 let days = [], locations = [], spots = [];
+let dspOpen = new Set();                 // дни с развёрнутым списком видов
 let dayLoc = null;                       // фильтр дней по месту или точке: { type, id, name }
 let locSort = { key: "days", dir: -1 };
 
@@ -468,7 +475,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 const FILTERS = {
-  days: ["d-q", "d-year", "d-kind", "d-noloc", "d-nocoord", "d-notes"],
+  days: ["d-q", "d-year", "d-kind", "d-species", "d-noloc", "d-nocoord", "d-notes"],
   locs: ["l-q", "l-kind", "l-nocoord", "l-nodays"],
 };
 function readFilters(ids) {
@@ -488,6 +495,7 @@ function restoreFilters(ids, key) {
 async function loadAll() {
   [locations, days, spots] = await Promise.all([api("/api/locations"), api("/api/days"), api("/api/spots")]);
   fillYears();
+  fillDaySpecies();
   $("#nav-days").textContent = days.length;
   $("#nav-locs").textContent = locations.length;
   renderDays();
@@ -504,6 +512,43 @@ function fillYears() {
   sel.value = years.includes(cur) ? cur : "";
 }
 
+// Виды дня: подтверждённые и «неопределимо» с группой («Чайки sp.»).
+// Ключ вида — как в фильтре вкладки «Виды»: латынь, у группы без латыни — русское имя.
+const DSP_GROUPS = [["birds", "Птицы"], ["mammals", "Млекопитающие"], ["herps", "Земноводные и рептилии"],
+                    ["insects", "Насекомые"], ["plants", "Растения"], ["fungi", "Грибы"], ["other", "Прочее"]];
+const dspKey = x => (x.unid ? "unid:" : "sp:") + (x.sci || x.ru || "");
+const dspName = x => x.unid ? (x.ru || x.sci ? `${x.ru || x.sci} sp.` : "неопределимо") : (x.ru || x.sci);
+function fillDaySpecies() {
+  const sel = $("#d-species"), cur = sel.value || store.get("days-filters", {})["d-species"] || "";
+  const all = new Map();
+  for (const d of days) for (const x of d.species || []) {
+    if (x.unid && !x.sci && !x.ru) continue;
+    const k = dspKey(x), o = all.get(k) || { ...x, days: 0 };
+    o.days++; all.set(k, o);
+  }
+  const list = [...all.entries()].sort((a, b) => a[1].unid - b[1].unid || dspName(a[1]).localeCompare(dspName(b[1]), "ru"));
+  sel.innerHTML = `<option value="">Все виды</option>` + DSP_GROUPS.map(([g, title]) => {
+    const opts = list.filter(([, x]) => (x.group || "other") === g);
+    return opts.length ? `<optgroup label="${title}">${opts.map(([k, x]) =>
+      `<option value="${esc(k)}">${esc(dspName(x))} · ${x.days} ${plural(x.days, "день", "дня", "дней")}</option>`).join("")}</optgroup>` : "";
+  }).join("");
+  sel.classList.toggle("hidden", !all.size);
+  sel.value = all.has(cur) ? cur : "";
+}
+function daySpeciesHtml(d, fk) {
+  const list = (d.species || []).filter(x => !x.unid || x.sci || x.ru);
+  const rest = (d.species || []).filter(x => x.unid && !x.sci && !x.ru).reduce((s, x) => s + x.n, 0);
+  if (!list.length && !rest) return "";
+  const open = dspOpen.has(d.id), LIM = 8;
+  const shown = open || list.length <= LIM + 2 ? list : list.slice(0, LIM);
+  const a = shown.map(x => `<button class="link${x.unid ? " unid" : ""}${dspKey(x) === fk ? " on" : ""}" data-dsp="${esc(dspKey(x))}"
+      title="${esc(x.sci || "")} · ${x.n} ${plural(x.n, "кадр", "кадра", "кадров")} — открыть во «Видах»">${esc(dspName(x))}</button>${
+      x.n > 1 ? ` <small>×${x.n}</small>` : ""}`);
+  if (shown.length < list.length) a.push(`<button class="link" data-dsp-more="${d.id}">ещё ${list.length - shown.length}</button>`);
+  if (rest) a.push(`<button class="link unid" data-dsp="unid:" title="Неопределимо без группы — открыть во «Видах»">неопределимо</button>${rest > 1 ? ` <small>×${rest}</small>` : ""}`);
+  return `<div class="daysp">${list.length ? `${list.length} ${plural(list.length, "вид", "вида", "видов")}: ` : ""}${a.join(", ")}</div>`;
+}
+
 function dayMatches(d, f) {
   if (dayLoc && dayLoc.type === "place" && !d.locations.some(l => l.id === dayLoc.id)) return false;
   if (dayLoc && dayLoc.type === "spot" && !(d.spot && d.spot.id === dayLoc.id)) return false;
@@ -512,9 +557,11 @@ function dayMatches(d, f) {
   if (f["d-noloc"] && d.locations.length) return false;
   if (f["d-nocoord"] && !d.locations.some(l => l.kind === "place" && l.lat == null)) return false;
   if (f["d-notes"] && !(d.notes || "").trim()) return false;
+  if (f["d-species"] && !(d.species || []).some(x => dspKey(x) === f["d-species"])) return false;
   const q = norm(f["d-q"].trim());
   if (q) {
-    const hay = norm([d.locations.map(l => l.name).join(" "), d.source_name, d.source_folder, d.notes, d.date, dmy(d.date)].join(" | "));
+    const hay = norm([d.locations.map(l => l.name).join(" "), d.source_name, d.source_folder, d.notes, d.date, dmy(d.date),
+                      (d.species || []).map(x => `${x.ru || ""} ${x.sci || ""}`).join(" ")].join(" | "));
     if (!hay.includes(q)) return false;
   }
   return true;
@@ -577,6 +624,7 @@ function renderDays() {
           ${d.track_m || d.finds ? `<div class="fieldlink"><button class="link" onclick="openDayMap(${d.id})">на карте: ${
             d.track_m ? "трек " + (d.track_m / 1000).toFixed(1) + " км" : ""}${d.track_m && d.finds ? " · " : ""}${
             d.finds ? d.finds + " " + plural(d.finds, "заметка", "заметки", "заметок") : ""}</button></div>` : ""}
+          ${daySpeciesHtml(d, f["d-species"])}
           ${d.location_manual ? '<div class="tag">задано вручную</div>' : ""}
           ${q && d.source_folder && norm(d.source_folder).includes(q) ? `<div class="tag">папка: ${hl(d.source_folder, q)}</div>` : ""}</td>
       <td class="hide-sm muted" style="white-space:nowrap">${hm(d.first_shot)}–${hm(d.last_shot)}</td>
@@ -661,6 +709,15 @@ function fillLocSelect(sel) {
     sorted.map(l => `<option value="${l.id}" ${ids.length === 1 && ids[0] === l.id ? "selected" : ""}>${esc(l.name)}</option>`).join("");
   sel.dataset.filled = "1";
 }
+$("#days-body").addEventListener("click", e => {
+  const more = e.target.closest("[data-dsp-more]");
+  if (more) { dspOpen.add(+more.dataset.dspMore); renderDays(); return; }
+  const b = e.target.closest("[data-dsp]");
+  if (!b) return;
+  const d = days.find(x => x.id === +b.closest("tr").dataset.id);
+  const k = b.dataset.dsp, i = k.indexOf(":");
+  openSpeciesFor(d.date, k.slice(0, i) === "unid", k.slice(i + 1));
+});
 $("#days-body").addEventListener("mousedown", e => { if (e.target.classList.contains("loc")) fillLocSelect(e.target); });
 $("#days-body").addEventListener("focusin", e => { if (e.target.classList.contains("loc")) fillLocSelect(e.target); });
 
@@ -2055,6 +2112,7 @@ async function spDecide(i, action, t = null, source = null) {
     renderSpecies();
     spSelect(next);
     loadSpeciesMeta().catch(() => {});
+    sp.daysStale = true;
   } catch (err) { status("Ошибка: " + err.message, 6000); }
 }
 
@@ -2088,6 +2146,7 @@ async function spUndo() {
   try {
     await api("/api/species/undo", { method: "POST", body: JSON.stringify(u) });
     status("Отменено");
+    sp.daysStale = true;
     await loadSpecies(true);
     loadSpeciesMeta().catch(() => {});
   } catch (err) { status("Ошибка: " + err.message, 6000); }
@@ -2260,6 +2319,7 @@ function spScope() { const t = spScopeText(); return t ? ` (${esc(t)})` : ""; }
 async function spBatch(action, items, what) {
   const r = await api("/api/species/decide-batch", { method: "POST", body: JSON.stringify({ action, items }) });
   sp.undo.push(r.undo);
+  sp.daysStale = true;
   status(`${what}: ${r.series} ${plural(r.series, "серия", "серии", "серий")}, ${r.n} ${plural(r.n, "кадр", "кадра", "кадров")} — Z отменит`, 6000);
   await loadSpecies(true);
   loadSpeciesMeta().catch(() => {});
@@ -2363,8 +2423,27 @@ $("#sp-none-day").addEventListener("click", async () => {
   } catch (err) { status("Ошибка: " + err.message, 6000); }
 });
 
-async function openSpeciesTab() {
-  if (sp.loaded) return;
+// Из карточки дня: «Виды» с фильтром по дню и виду (подтверждённые или неопределимые)
+async function openSpeciesFor(date, unid, sci) {
+  showTab("species");
+  try {
+    await openSpeciesTab();
+    $("#sp-state").value = unid ? "unid" : "confirmed";
+    $("#sp-day").value = date;
+    for (const id of ["sp-loc", "sp-conf", "sp-kind", "sp-group"]) $("#" + id).value = "";
+    $("#sp-top3").checked = false;
+    $("#sp-species").value = sci ? "sp:" + sci : "";
+    await loadSpecies();
+    $("#sp-sp-q").value = spInputText(spFilterVal());
+    window.scrollTo({ top: 0 });
+  } catch (err) { status("Ошибка: " + err.message, 8000); }
+}
+
+function openSpeciesTab() {
+  if (sp.loaded) return Promise.resolve();
+  return sp.opening ||= spFirstOpen().finally(() => { sp.opening = null; });
+}
+async function spFirstOpen() {
   restoreFilters([...SP_FILTERS, ...SP_LOCAL], "species-filters-v2");
   try { $("#sp-thr").value = store.get("species-thr", "0.90"); } catch {}
   try {
@@ -2381,6 +2460,10 @@ function showTab(tab) {
   for (const t of ["days", "locations", "map", "plan", "species"]) $("#tab-" + t).classList.toggle("hidden", tab !== t);
   if (tab === "plan" && !planLoaded) loadPlan();
   if (tab === "species") openSpeciesTab();
+  if (tab === "days" && sp.daysStale) {      // решения во «Видах» меняют виды в карточках дней
+    sp.daysStale = false;
+    api("/api/days").then(r => { days = r; fillDaySpecies(); renderDays(); }).catch(() => {});
+  }
   document.querySelector("main").classList.toggle("wide", tab === "map");
   store.set("tab", tab);
   if (tab === "map") { initMap(); setTimeout(() => map.invalidateSize(), 0); }

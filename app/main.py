@@ -94,7 +94,9 @@ def api_days():
         wx = weather.summaries(conn)
         tracks = {r[0]: r[1] for r in conn.execute("SELECT day_id, SUM(length_m) FROM tracks GROUP BY day_id")}
         nfinds = {r[0]: r[1] for r in conn.execute("SELECT day_id, COUNT(*) FROM finds GROUP BY day_id")}
+        dsp = review.day_species(conn)
     for d in days:
+        d["species"] = dsp.get(d["id"], [])
         d["track_m"] = tracks.get(d["id"])
         d["finds"] = nfinds.get(d["id"], 0)
         d["weather"] = wx.get(d["id"])
