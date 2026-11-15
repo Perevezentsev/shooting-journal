@@ -139,6 +139,8 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     field.ensure_schema(conn)
     from . import species        # распознавание видов (torch здесь не импортируется)
     species.ensure_schema(conn)
+    from . import lrbridge       # что плагин Lightroom уже записал (v0.9)
+    lrbridge.ensure_schema(conn)
     conn.commit()
     return conn
 

@@ -10,8 +10,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 import httpx
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -19,7 +19,7 @@ from . import db
 from .locations import KINDS, merge_locations, set_day_locations
 from .lrcat import Photo
 from .sync import sync_catalog
-from . import field, inat, lifelist, plan, review, species, weather
+from . import field, inat, lifelist, lrbridge, plan, review, species, weather
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
@@ -343,6 +343,41 @@ def api_species_run_start():
 @app.post("/api/species/run/stop")
 def api_species_run_stop():
     return species.stop_run()
+
+
+# --- Плагин Lightroom ---------------------------------------------------------
+# Плагин пишет в каталог сам, через API Lightroom; журнал только отдаёт список и запоминает,
+# что записано. Ответы — текст с табуляцией (см. app/lrbridge.py).
+
+def _lr_guard(conn, catalog: str | None) -> None:
+    if db.is_demo(conn):
+        raise HTTPException(409, "Журнал запущен на демо-базе: её кадры не из твоего каталога, писать нельзя.")
+    if catalog:
+        mine = Path(load_config().get("catalog_path", "").replace("\\", "/")).name
+        theirs = catalog.replace("\\", "/").rsplit("/", 1)[-1]
+        if mine and theirs.casefold() != mine.casefold():
+            raise HTTPException(409, f"В Lightroom открыт другой каталог ({theirs}), журнал читает {mine}.")
+
+
+@app.get("/api/lr/pending", response_class=PlainTextResponse)
+def api_lr_pending(catalog: str | None = None):
+    with db.connect() as conn:
+        _lr_guard(conn, catalog)
+        return PlainTextResponse(lrbridge.pending_text(conn), media_type="text/plain; charset=utf-8")
+
+
+@app.post("/api/lr/done")
+async def api_lr_done(request: Request, catalog: str | None = None):
+    text = (await request.body()).decode("utf-8")
+    with db.connect() as conn:
+        _lr_guard(conn, catalog)
+        return lrbridge.mark_done(conn, text)
+
+
+@app.get("/api/lr/summary")
+def api_lr_summary():
+    with db.connect() as conn:
+        return lrbridge.summary(conn)
 
 
 @app.get("/api/lifelist")
