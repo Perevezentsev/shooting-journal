@@ -7,5 +7,6 @@
     "/Экспорт/"
   ],
   "species_auto": true,
-  "species_scope": "all"
+  "species_scope": "all",
+  "seen_min": {}
 }

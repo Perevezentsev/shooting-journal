@@ -85,6 +85,16 @@ JOURNAL_DB=data/demo.db ./run.sh        # журнал на демо-базе, �
 
 `python -m app.species status` — что сделано и что в очереди, `rescore` — пересчитать подсказки за секунды без повторного чтения превью.
 
+Весь архив, а не только отобранное, — частями, хоть по ночам:
+
+```bash
+.venv/bin/python -m app.species estimate --all    # сколько кадров, времени и места
+.venv/bin/python -m app.species run --all --minutes 480
+.venv/bin/python -m app.species report --sheet    # что нашлось и лист для проверки «видел»
+```
+
+После архива во «Видах» появляются «Кандидаты в первые встречи» и «Может быть, новый вид».
+
 ### Папка дня
 
 ```

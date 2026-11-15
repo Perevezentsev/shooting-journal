@@ -154,6 +154,50 @@ def add_species(conn, days: list[tuple[int, date, str]]) -> dict:
     return stats
 
 
+# «Может быть, новый вид»: виды, которых в лайфлисте нет, — только на неотобранных кадрах
+MAYBE_NEW = [("Lynx lynx", "Рысь", "Mammalia", "Felidae", "Кошачьи"),
+             ("Bubo bubo", "Филин", "Aves", "Strigidae", "Совиные")]
+
+
+def add_archive(conn) -> dict:
+    """Примеры для списков архива: неотобранные кадры раньше первой встречи вида из лайфлиста
+    и виды не из лайфлиста. Свой генератор — остальная демо-база от этого не меняется."""
+    rnd = random.Random(7)
+    days = conn.execute("SELECT id, date FROM days ORDER BY date").fetchall()
+    img = conn.execute("SELECT MAX(image_id) FROM photos").fetchone()[0] + 1000
+
+    def frame(day_id, d, sci, cls, score):
+        nonlocal img
+        img += 1
+        t = f"{d}T{rnd.randint(6, 10):02d}:{rnd.randint(0, 59):02d}:00"
+        conn.execute("INSERT INTO photos(image_id, day_id, file_name, folder_path, capture_time, pick, rating, keywords) "
+                     "VALUES (?, ?, ?, '', ?, 0, 0, '')", (img, day_id, f"DSC_{img % 100000:05d}.NEF", t))
+        conn.execute("INSERT INTO species_crops(image_id, status, det_conf, model, processed_at) "
+                     "VALUES (?, 'crop', ?, 'bioclip-2', ?)", (img, round(rnd.uniform(.6, .95), 2), t))
+        others = [x for x in rnd.sample(SPECIES, 5) if x[0] != sci][:4]
+        rest = sorted((rnd.uniform(0, 1 - score) for _ in others), reverse=True)
+        preds = [(sci, cls, score)] + [(o[0], o[2], sc) for o, sc in zip(others, rest)]
+        for rank, (name, klass, sc) in enumerate(preds, 1):
+            conn.execute("INSERT INTO species_preds(image_id, rank, scientific, class_name, score) VALUES (?,?,?,?,?)",
+                         (img, rank, name, klass, round(sc, 3)))
+
+    firsts = 0
+    for sci, _, grp, *_ in rnd.sample(SPECIES, 4):
+        r = conn.execute("SELECT MIN(d.date) FROM species_confirm sc JOIN photos p ON p.image_id = sc.image_id "
+                         "JOIN days d ON d.id = p.day_id WHERE sc.status = 'confirmed' AND sc.scientific = ?", (sci,)).fetchone()
+        earlier = [x for x in days if r[0] and x["date"] < r[0]]
+        if earlier:
+            x = rnd.choice(earlier)
+            frame(x["id"], x["date"], sci, grp, round(rnd.uniform(.84, .95), 3))
+            firsts += 1
+    for sci, ru, grp, fam, fam_ru in MAYBE_NEW:
+        conn.execute("INSERT INTO species_names(scientific, ru, obs, grp, family, family_ru) VALUES (?,?,?,?,?,?)",
+                     (sci, ru, rnd.randint(20, 300), grp, fam, fam_ru))
+        for x in rnd.sample(days, 3):
+            frame(x["id"], x["date"], sci, grp, round(rnd.uniform(.82, .96), 3))
+    return {"firsts": firsts, "new": len(MAYBE_NEW)}
+
+
 FINDS = [("Нора", "свежие выбросы земли, следы у входа", 1),
          ("Дупло", "слышал птенцов", 1),
          ("Точка у берега", "вечером свет в спину, птица подходит близко", 0)]
@@ -280,10 +324,12 @@ def main() -> None:
 
     sp = add_species(conn, made)
     tracks = add_tracks(conn, {p[0]: (p[1], p[2]) for p in PLACES if p[1] is not None})
+    archive = add_archive(conn)
     exif = add_exif(conn)
     conn.commit()
     print(f"Готово: {DEMO_PATH.relative_to(ROOT)} — {len(PLACES)} мест, {n} дней, {len(SPOTS)} точки; "
-          f"виды: {sp['photos']} кадров, подтверждено {sp['confirmed']}, «видел» {sp['seen']}; треков {tracks}; EXIF {exif}")
+          f"виды: {sp['photos']} кадров, подтверждено {sp['confirmed']}, «видел» {sp['seen']}; треков {tracks}; EXIF {exif}; "
+          f"архив: кандидатов в первые встречи {archive['firsts']}, новых видов {archive['new']}")
     print("Запуск: JOURNAL_DB=data/demo.db ./run.sh")
 
 

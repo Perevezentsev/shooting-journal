@@ -68,6 +68,9 @@ CROP_PAD = 0.15         # поля вокруг рамки, доля её сто
 CROP_PX = 448           # кроп не мельче этого (модель смотрит 224×224)
 DET_THRESHOLD = 0.2
 TOP_K = 5
+MIN_PREVIEW = 480       # превью не крупнее этого (длинная сторона) — не гадаем, «нет превью»
+EST_RATE = 2.2          # кадр/с — для оценки времени, если прошлых прогонов ещё не было
+EST_BYTES = 6_000       # на кадр: эмбеддинг (1,5 КБ) + строки в базе с запасом
 PLATEAU_S = 120        # пауза: столько секунд без остывания — дальше ждать бесполезно
 
 SCHEMA = """
@@ -415,6 +418,12 @@ def prepare(store, md, image_id: int, small) -> Item:
     """Превью → MegaDetector → кроп. small — уровень для детектора (уже прочитан)."""
     if small is None:
         return Item(image_id, "no_preview")
+    if small.long_side and small.long_side <= MIN_PREVIEW:
+        big = store.read(image_id)
+        if big is None or (big.long_side and big.long_side <= MIN_PREVIEW):
+            return Item(image_id, "no_preview", src_long=small.long_side,
+                        error=f"превью {small.long_side} px — слишком мелкое, вид не гадаем")
+        small = big
     img = small.image()
     r = md.generate_detections_one_image(img, str(image_id), detection_threshold=DET_THRESHOLD)
     dets = r.get("detections") or []
@@ -473,10 +482,13 @@ def queue(conn: sqlite3.Connection, all_photos=False, day=None, retry=False, sco
         where.append("p.capture_time LIKE ?")
         args.append(f"{day}%")
     skip = "c.status NOT IN ('error', 'no_preview')" if retry else "1=1"
-    sql = (f"SELECT p.image_id FROM photos p "
+    # Архив целиком: новые годы → старые, внутри дня сначала ★2+. Иначе — сначала все ★2+.
+    order = ("d.date DESC, p.day_id DESC, p.rating >= 2 DESC, p.capture_time" if all_photos
+             else "p.rating >= 2 DESC, p.capture_time DESC")
+    sql = (f"SELECT p.image_id FROM photos p JOIN days d ON d.id = p.day_id "
            f"WHERE {' AND '.join(where)} AND NOT EXISTS ("
            f"  SELECT 1 FROM species_crops c WHERE c.image_id = p.image_id AND {skip}) "
-           f"ORDER BY p.rating >= 2 DESC, p.capture_time DESC")
+           f"ORDER BY {order}")
     return [r[0] for r in conn.execute(sql, args)]
 
 
@@ -595,6 +607,56 @@ def stop_run() -> dict:
     return {"stopped": True}
 
 
+def last_rate() -> float:
+    """Скорость прошлого прогона, кадр/с (из data/species_run.json), иначе EST_RATE."""
+    try:
+        r = float(json.loads(RUN_STATUS.read_text(encoding="utf-8")).get("rate") or 0)
+    except (OSError, ValueError):
+        r = 0
+    return r if r > 0.2 else EST_RATE
+
+
+def estimate(conn, ids: list[int]) -> dict:
+    """Что предстоит: кадров по годам, время при прошлой скорости, место на диске."""
+    import shutil as _sh
+    by_year: dict[str, list[int]] = {}
+    if ids:
+        for i in range(0, len(ids), 900):
+            part = ids[i:i + 900]
+            for y, sel, n in conn.execute(
+                    f"SELECT substr(d.date, 1, 4), SUM(p.rating >= 2), COUNT(*) FROM photos p JOIN days d "
+                    f"ON d.id = p.day_id WHERE p.image_id IN ({','.join('?' * len(part))}) GROUP BY 1", part):
+                cur = by_year.setdefault(y, [0, 0])
+                cur[0] += n
+                cur[1] += sel or 0
+    rate = last_rate()
+    free = _sh.disk_usage(DATA).free
+    return {"total": len(ids), "by_year": sorted(((y, n, s) for y, (n, s) in by_year.items()), reverse=True),
+            "rate": rate, "seconds": len(ids) / rate if rate else None,
+            "bytes": len(ids) * EST_BYTES, "free": free}
+
+
+def print_estimate(est: dict) -> None:
+    print(f"Кадров в очереди: {est['total']}")
+    for y, n, sel in est["by_year"]:
+        print(f"  {y}: {n}" + (f" (★2+: {sel})" if sel else ""))
+    if est["seconds"]:
+        print(f"Время: ~{_fmt_dur(est['seconds'])} работы карты при {est['rate']:.2f} кадр/с "
+              "(плюс паузы на остывание). Можно частями: --minutes N, продолжит с места остановки.")
+    print(f"Место: ~{est['bytes'] / 1e6:.0f} МБ (эмбеддинги и база), свободно {est['free'] / 1e9:.0f} ГБ.")
+
+
+def backup_db(conn, tag: str) -> Path:
+    """Копия базы журнала перед большим прогоном — средствами SQLite, безопасно при работающем журнале."""
+    from .db import DB_PATH
+    dst = DB_PATH.with_name(f"{DB_PATH.stem}.backup-{tag}-{datetime.now():%Y%m%d-%H%M}.db")
+    out = sqlite3.connect(dst)
+    with out:
+        conn.backup(out)
+    out.close()
+    return dst
+
+
 class Progress:
     def __init__(self, total: int):
         self.total, self.done, self.t0 = total, 0, time.time()
@@ -646,7 +708,15 @@ def run(conn: sqlite3.Connection, cfg: dict, *, all_photos=False, day=None, retr
     ids = queue(conn, all_photos, day, retry, scope)
     if limit:
         ids = ids[:limit]
-    write_run_status(state="starting", done=0, total=len(ids), started_at=time.time(), note="загружаю модели")
+    if all_photos and ids:
+        print_estimate(estimate(conn, ids))
+        if not conn.execute("SELECT 1 FROM meta WHERE key = 'species_archive_backup'").fetchone():
+            dst = backup_db(conn, "before-archive")
+            conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('species_archive_backup', ?)", (dst.name,))
+            conn.commit()
+            print(f"Копия базы: {dst}")
+    write_run_status(state="starting", done=0, total=len(ids), started_at=time.time(), note="загружаю модели",
+                     archive=bool(all_photos))
     if not ids:
         print("Нечего обрабатывать: все кадры уже в species_crops.")
         write_run_status(state="done", reason="нечего обрабатывать", left=0, finished_at=time.time())
@@ -749,6 +819,11 @@ def run(conn: sqlite3.Connection, cfg: dict, *, all_photos=False, day=None, retr
         signal.signal(signal.SIGINT, old)
         prog.line(gpu_stats(), reason, final=True)
 
+    if prog.done:
+        try:
+            fetch_trips(conn)                     # списки поездок с новыми координатами (кэш — без сети)
+        except Exception as e:
+            print(f"Списки поездок не обновились ({type(e).__name__}) — `python -m app.species trips` позже.")
     trip_days = [d for d, p in day_profiles(conn).items() if p != "home"]
     if prog.done and trip_days:
         print("Пересчитываю дни поездок их списком видов…")
@@ -1349,6 +1424,27 @@ def _status(conn):
             print(f"  {n:5d}  {sci}  {com}  (ср. {avg})")
 
 
+def _report(conn, cfg: dict, sheet: bool, top: int, per: int):
+    from . import archive
+    r = archive.report(conn, top)
+    st = r["status"]
+    done = sum(st.values())
+    print(f"Кадров в журнале: {r['photos']}; распознано: {done} "
+          f"({', '.join(f'{k}: {v}' for k, v in sorted(st.items()))}); осталось: {r['photos'] - done}")
+    if r["no_preview_by_year"]:
+        print("Без нормального превью (нет или ≤ 480 px): "
+              + ", ".join(f"{y} — {n}" for y, n in r["no_preview_by_year"]))
+    print(f"«Видел, без хорошего кадра»: {r['seen_frames']} кадров, {r['seen_species']} видов, {r['seen_days']} дней.")
+    print(f"Кандидаты в первые встречи: {r['firsts']}; «может быть, новый вид»: {r['maybe_new']}.")
+    if r["top"]:
+        print("Больше всего автоматических «видел»:")
+        for s in r["top"]:
+            print(f"  {s['frames']:5d} кадров · {s['days']:3d} дн.  {s['ru'] or ''}  {s['sci']}")
+    if sheet:
+        p = archive.contact_sheet(conn, cfg, DATA / "review" / "seen-check", top, per)
+        print(f"Лист для глаз: {p}")
+
+
 def _show(conn, image_id: int):
     c = conn.execute("SELECT * FROM species_crops WHERE image_id = ?", (image_id,)).fetchone()
     if not c:
@@ -1375,6 +1471,13 @@ def main(argv=None):
                    "(или когда 2 мин не остывает дальше)")
     r.add_argument("--rest", type=float, default=0, help="отдых между пачками, с")
     sub.add_parser("status", help="сколько сделано и что в очереди")
+    es = sub.add_parser("estimate", help="оценка прогона: кадров по годам, время, место на диске")
+    es.add_argument("--all", action="store_true", help="весь архив")
+    rp = sub.add_parser("report", help="отчёт после прогона: «видел», кандидаты, кадры без превью")
+    rp.add_argument("--sheet", action="store_true", help="лист для глаз: 5 случайных кропов «видел» по 15 видам")
+    rp.add_argument("--top", type=int, default=15)
+    rp.add_argument("--per", type=int, default=5)
+    sub.add_parser("trips", help="списки iNat для поездок с координатами и пересчёт их дней")
     s = sub.add_parser("show", help="результат по кадру")
     s.add_argument("image_id", type=int)
     rs = sub.add_parser("rescore", help="пересчитать топ-5 из эмбеддингов")
@@ -1410,6 +1513,8 @@ def main(argv=None):
     conn = connect()
     if a.cmd == "status":
         _status(conn)
+    elif a.cmd == "estimate":
+        print_estimate(estimate(conn, queue(conn, a.all, scope=_scope())))
     elif a.cmd == "show":
         _show(conn, a.image_id)
     elif a.cmd == "rescore":
@@ -1442,6 +1547,16 @@ def main(argv=None):
         return
     if not cfg_path.exists():
         sys.exit("Нет config.json — не знаю, где каталог Lightroom.")
+    if a.cmd == "trips":
+        n = fetch_trips(conn)
+        days = [d for d, p in day_profiles(conn).items() if p != "home"]
+        print(f"Поездок со списком iNat: {n}; дней поездок: {len(days)}.")
+        if days:
+            rescore(conn, days=days)
+        return
+    if a.cmd == "report":
+        _report(conn, cfg, a.sheet, a.top, a.per)
+        return
     if a.cmd == "sample":
         sample(conn, cfg, a.out, a.n, a.status, a.max_score, a.seed)
     elif a.cmd == "run":

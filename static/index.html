@@ -225,6 +225,17 @@
   .leaflet-container { font: inherit; }
   /* --- Виды --- */
   .sp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+  .sp-arch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 12px; }
+  .sp-arch { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .sp-arch h4 { margin: 0 0 8px; font-size: 15px; }
+  .sp-arch h4 i, .sp-arch .sub { color: var(--muted); font-weight: 400; font-size: 12px; }
+  .sp-arch .pics { display: flex; gap: 8px; }
+  .sp-arch figure { margin: 0; flex: 1; min-width: 0; }
+  .sp-arch figure img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 4px; display: block; background: var(--bg); }
+  .sp-arch figcaption { font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.35; }
+  .sp-arch figcaption b { color: var(--ink); font-weight: 500; }
+  .sp-arch figure.off img { opacity: .3; }
+  .sp-arch .acts { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
   .sp-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden;
              display: flex; flex-direction: column; outline: 2px solid transparent; outline-offset: -1px; }
   .sp-card.sel { outline-color: var(--accent); }
@@ -473,22 +484,32 @@
     <div class="toolbar">
       <select id="sp-state">
         <option value="todo">Не разобрано</option>
-        <option value="unsel" title="Распознанные кадры без ★2 — из новых дней. В «Не разобрано» не попадают; поставишь ★2 в Lightroom — переедут туда сами">Неотобранные</option>
+        <option value="unsel" title="Распознанные кадры без ★2. В «Не разобрано» не попадают; поставишь ★2 в Lightroom — переедут туда сами">Неотобранные</option>
         <option value="confirmed">Подтверждено</option>
         <option value="unid">Неопределимо</option>
         <option value="rejected">«Не то»</option>
         <option value="none">Без вида</option>
         <option value="all">Все</option>
+        <option value="firsts" title="Неотобранный кадр с видом из лайфлиста раньше первой подтверждённой встречи (топ-1 ≥ 0.8)">Кандидаты в первые встречи</option>
+        <option value="maybe" title="Вид уверенно найден на неотобранных кадрах (топ-1 ≥ 0.8), но его нет в лайфлисте">Может быть, новый вид</option>
       </select>
-      <select id="sp-day"><option value="">Все дни</option></select>
-      <select id="sp-loc"><option value="">Все места</option></select>
-      <select id="sp-conf">
+      <select id="sp-year" class="sp-ser"><option value="">Все годы</option></select>
+      <select id="sp-rating" class="sp-ser" title="Звёзды кадра в Lightroom">
+        <option value="">Любой рейтинг</option>
+        <option value="2+">★2 и выше</option>
+        <option value="0">без звёзд</option>
+        <option value="1">★1</option><option value="2">★2</option><option value="3">★3</option>
+        <option value="4">★4</option><option value="5">★5</option>
+      </select>
+      <select id="sp-day" class="sp-ser"><option value="">Все дни</option></select>
+      <select id="sp-loc" class="sp-ser"><option value="">Все места</option></select>
+      <select id="sp-conf" class="sp-ser">
         <option value="">Любая уверенность</option>
         <option value="high">Уверенно (≥ 0.9)</option>
         <option value="mid">Сомнительно (0.5–0.9)</option>
         <option value="low">Неуверенно (&lt; 0.5)</option>
       </select>
-      <select id="sp-kind">
+      <select id="sp-kind" class="sp-ser">
         <option value="crop">Животное найдено</option>
         <option value="full">Весь кадр (животное не найдено)</option>
         <option value="doubt">Сомнительная рамка (&lt; 0.5)</option>
@@ -531,6 +552,11 @@
     </div>
     <div class="sp-grid" id="sp-grid"></div>
     <div class="sp-more" id="sp-more"></div>
+    <div id="sp-arch" class="hidden">
+      <div class="toolbar"><span class="muted" id="sp-arch-info"></span><span class="spacer"></span>
+        <button class="btn ghost small hidden" id="sp-arch-undo">Отменить последнее</button></div>
+      <div class="sp-arch-grid" id="sp-arch-grid"></div>
+    </div>
   </section>
 
   <!-- КАРТА -->
@@ -2023,7 +2049,8 @@ function renderDayPanel() {
 // --- ВИДЫ --------------------------------------------------------------------
 // Серия — кадры одного дня с разницей в несколько секунд: решение по серии
 // применяется ко всем её кадрам без решения (или ко всем, если решены все).
-const SP_FILTERS = ["sp-state", "sp-day", "sp-loc", "sp-conf", "sp-kind"];   // запрос к серверу
+const SP_FILTERS = ["sp-state", "sp-year", "sp-rating", "sp-day", "sp-loc", "sp-conf", "sp-kind"];   // запрос к серверу
+const SP_ARCH = ["firsts", "maybe"];          // свои списки архива — не серии, а карточки видов
 const SP_LOCAL = ["sp-group", "sp-species", "sp-top3"];                                  // поверх загруженного
 const SP_GROUP_RU = { birds: "птицы", mammals: "млекопитающие", herps: "земноводные и рептилии", insects: "насекомые",
                       plants: "растения", fungi: "грибы", other: "прочее" };
@@ -2044,19 +2071,49 @@ async function loadSpeciesMeta() {
   lsel.innerHTML = `<option value="">Все места</option>` + m.locations.map(l =>
     `<option value="${l.id}">${esc(l.name)} (${l.n})</option>`).join("");
   dsel.value = dv; lsel.value = lv;
+  const ysel = $("#sp-year"), yv = ysel.value;
+  ysel.innerHTML = `<option value="">Все годы</option>` + (m.years || []).map(y => `<option>${y}</option>`).join("");
+  ysel.value = yv;
+  sp.years = m.years || [];
   const saved = store.get("species-filters-v2", {});
-  for (const id of ["sp-day", "sp-loc"]) if (saved[id] && !$("#" + id).value) $("#" + id).value = saved[id];
+  for (const id of ["sp-day", "sp-loc", "sp-year"]) if (saved[id] && !$("#" + id).value) $("#" + id).value = saved[id];
+}
+
+// Подсказки приходят как [латынь, уверенность], описание вида — один раз в labels
+function spHydrate(r) {
+  const L = r.labels || {};
+  const h = x => Array.isArray(x) ? { ...(L[x[0]] || { sci: x[0] }), score: x[1] } : x;
+  for (const s of r.series) {
+    s.top = (s.top || []).map(h);
+    s.cands = (s.cands || []).map(h);
+    for (const fr of s.frames) fr.top = (fr.top || []).map(h);
+  }
 }
 
 async function loadSpecies(keepSel = false) {
+  const st = $("#sp-state").value;
+  const arch = SP_ARCH.includes(st);
+  $("#sp-arch").classList.toggle("hidden", !arch);
+  for (const id of ["sp-grid", "sp-more", "sp-summary"]) $("#" + id).classList.toggle("hidden", arch);
+  document.querySelector("#tab-species .sp-keys").classList.toggle("hidden", arch);
+  document.querySelectorAll("#tab-species .sp-ser").forEach(el => el.disabled = arch);
+  if (arch) { spSaveFilters(); return loadArchive(st); }
+  // Неотобранных после архива десятки тысяч серий — без дня и года показываем последний год
+  if (st === "unsel" && !$("#sp-day").value && !$("#sp-year").value && sp.years?.length) {
+    $("#sp-year").value = sp.years[0];
+    status(`Неотобранные за ${sp.years[0]} год — другой год в фильтре рядом`, 5000);
+  }
   const f = readFilters(SP_FILTERS);
   spSaveFilters();
   const q = new URLSearchParams({ state: f["sp-state"] || "todo" });
+  if (f["sp-year"]) q.set("year", f["sp-year"]);
+  if (f["sp-rating"]) q.set("rating", f["sp-rating"]);
   if (f["sp-day"]) q.set("day", f["sp-day"]);
   if (f["sp-loc"]) q.set("loc", f["sp-loc"]);
   if (f["sp-conf"]) q.set("conf", f["sp-conf"]);
   if (f["sp-kind"]) q.set("kind", f["sp-kind"]);
   const r = await api("/api/species/items?" + q);
+  spHydrate(r);
   sp.all = r.series;
   sp.counts = r.counts;
   sp.frames = r.frames;
@@ -2474,6 +2531,7 @@ $("#sp-grid").addEventListener("click", e => {
 
 document.addEventListener("keydown", e => {
   if ($("#tab-species").classList.contains("hidden")) return;
+  if (SP_ARCH.includes($("#sp-state").value)) return;          // у списков архива свои кнопки
   if ($("#sp-bulk-box")) { if (e.key === "Escape") $("#sp-bulk-box").remove(); return; }
   if (e.target.matches("input, textarea, select") || e.ctrlKey && e.key !== "z" || e.metaKey || e.altKey) return;
   const c = sp.cards[sp.sel];
@@ -2508,6 +2566,7 @@ document.addEventListener("keydown", e => {
 for (const id of SP_FILTERS) $("#" + id).addEventListener("change", () => loadSpecies().catch(err => status("Ошибка: " + err.message, 6000)));
 $("#sp-reset").addEventListener("click", () => {
   for (const id of [...SP_FILTERS, ...SP_LOCAL]) $("#" + id).value = id === "sp-state" ? "todo" : id === "sp-kind" ? "crop" : "";
+  $("#sp-arch").classList.add("hidden");
   $("#sp-sp-q").value = ""; $("#sp-top3").checked = false;
   loadSpecies();
 });
@@ -2940,6 +2999,88 @@ document.querySelectorAll('input[name="g-focal"]').forEach(r => r.addEventListen
 }));
 gearState.focal = store.get("gear-focal", "real");
 document.querySelectorAll('input[name="g-focal"]').forEach(r => { r.checked = r.value === gearState.focal; });
+
+// ---------- Виды: списки архива ----------
+// «Кандидаты в первые встречи» и «Может быть, новый вид» — по карточке на вид, решение кнопками.
+const arch = { list: [], last: null };
+const archCap = (x, extra = "") => `<b>${dmy(x.date)}</b> ${esc(x.time || "")}${x.places?.length ? " · " + esc(x.places.join(", ")) : ""}${extra}`;
+const archImg = id => `<a href="/api/species/frame/${id}" target="_blank" title="Открыть кадр крупно"><img src="/api/species/crop/${id}" loading="lazy" alt=""></a>`;
+
+async function loadArchive(kind) {
+  $("#sp-arch-info").textContent = "Загружаю…";
+  $("#sp-arch-grid").innerHTML = "";
+  try { arch.list = await api(kind === "firsts" ? "/api/species/firsts" : "/api/species/maybe-new"); }
+  catch (err) { $("#sp-arch-info").textContent = "Ошибка: " + err.message; return; }
+  arch.kind = kind;
+  renderArchive();
+}
+
+function renderArchive() {
+  const L = arch.list, firsts = arch.kind === "firsts";
+  $("#sp-arch-info").innerHTML = !L.length ? (firsts ? "Кандидатов нет: среди неотобранных кадров нет более ранних встреч видов из лайфлиста." :
+      "Новых видов на неотобранных кадрах не видно.") :
+    firsts ? `Видов с более ранней встречей среди неотобранных: <b>${L.length}</b>. Подтвердишь — первая встреча в лайфлисте переедет на этот кадр (он останется без ★).`
+           : `Видов, которых нет в лайфлисте: <b>${L.length}</b>. Подтвердишь — вид войдёт в лайфлист по отмеченным кадрам.`;
+  $("#sp-arch-undo").classList.toggle("hidden", !arch.last);
+  $("#sp-arch-grid").innerHTML = L.map((x, i) => firsts ? `
+    <div class="sp-arch" data-i="${i}">
+      <h4>${esc(x.ru || x.sci)} <i>${esc(x.sci)}</i></h4>
+      <div class="pics">
+        <figure>${archImg(x.cand.id)}<figcaption>кандидат · без ★<br>${archCap(x.cand, ` · ${x.cand.score.toFixed(2)}`)}</figcaption></figure>
+        <figure>${archImg(x.first.id)}<figcaption>сейчас первая встреча<br>${archCap(x.first)}</figcaption></figure>
+      </div>
+      <div class="acts"><button class="btn small" data-arch="ok">Подтвердить</button>
+        <button class="btn ghost small" data-arch="no" title="Этот кадр больше не предлагать; если есть другой ранний кадр — покажу его">Не он</button></div>
+    </div>` : `
+    <div class="sp-arch" data-i="${i}">
+      <h4>${esc(x.ru || x.sci)} <i>${esc(x.sci)}</i></h4>
+      <div class="sub">${x.n} ${plural(x.n, "кадр", "кадра", "кадров")} в ${x.days} ${plural(x.days, "дне", "днях", "днях")} · лучший ${x.best.toFixed(2)}</div>
+      <div class="pics">${x.frames.map((f, k) => `<figure data-k="${k}">${archImg(f.id)}<figcaption>
+        <label><input type="checkbox" checked data-arch-pick="${k}"> ${archCap(f, ` · ${f.score.toFixed(2)}`)}</label></figcaption></figure>`).join("")}</div>
+      <div class="acts"><button class="btn small" data-arch="ok">Подтвердить отмеченные</button>
+        <button class="btn ghost small" data-arch="no" title="Этот вид больше не предлагать">Не этот вид</button></div>
+    </div>`).join("");
+}
+
+$("#sp-arch-grid").addEventListener("change", e => {
+  const k = e.target.dataset.archPick;
+  if (k != null) e.target.closest("figure").classList.toggle("off", !e.target.checked);
+});
+$("#sp-arch-grid").addEventListener("click", async e => {
+  const b = e.target.closest("[data-arch]");
+  if (!b) return;
+  const card = b.closest(".sp-arch"), x = arch.list[+card.dataset.i], firsts = arch.kind === "firsts";
+  b.disabled = true;
+  try {
+    if (b.dataset.arch === "ok") {
+      const ids = firsts ? [x.cand.id] : x.frames.filter((f, k) => card.querySelector(`[data-arch-pick="${k}"]`).checked).map(f => f.id);
+      if (!ids.length) { status("Отметь хотя бы один кадр"); b.disabled = false; return; }
+      const r = await api("/api/species/decide", { method: "POST", body: JSON.stringify({
+        ids, action: "confirm", sci: x.sci, ru: x.ru, inat_id: x.inat_id ?? null, source: firsts ? "first" : "maybe" }) });
+      arch.last = { type: "decide", undo: r.undo };
+      status(firsts ? `✓ ${x.ru || x.sci}: первая встреча теперь ${dmy(x.cand.date)}` : `✓ ${x.ru || x.sci} — в лайфлисте`, 5000);
+    } else {
+      const key = firsts ? String(x.cand.id) : x.sci;
+      await api("/api/species/dismiss", { method: "POST", body: JSON.stringify({ kind: firsts ? "first" : "new", key }) });
+      arch.last = { type: "dismiss", kind: firsts ? "first" : "new", key };
+      status(firsts ? "Кадр больше не предлагаю" : `${x.ru || x.sci} больше не предлагаю`, 4000);
+    }
+    sp.daysStale = true; life.stale = true; gearState.stale = true;
+    await loadArchive(arch.kind);                    // следующий кандидат вида, если есть
+  } catch (err) { status("Ошибка: " + err.message, 6000); b.disabled = false; }
+});
+$("#sp-arch-undo").addEventListener("click", async () => {
+  const u = arch.last;
+  if (!u) return;
+  try {
+    if (u.type === "decide") await api("/api/species/undo", { method: "POST", body: JSON.stringify(u.undo) });
+    else await api("/api/species/dismiss", { method: "POST", body: JSON.stringify({ kind: u.kind, key: u.key, undo: true }) });
+    arch.last = null;
+    status("Отменено");
+    sp.daysStale = true; life.stale = true;
+    await loadArchive(arch.kind);
+  } catch (err) { status("Ошибка: " + err.message, 6000); }
+});
 
 function showTab(tab) {
   document.querySelectorAll("nav button").forEach(x => x.classList.toggle("active", x.dataset.tab === tab));

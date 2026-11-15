@@ -114,44 +114,107 @@ def _label(sci: str | None, names: dict, common: str | None = None, class_name: 
             "family": n.get("family"), "family_ru": n.get("family_ru"), "rare": n.get("obs") is not None and n["obs"] < sp.REGION_MIN_OBS}
 
 
-def items(conn, *, day: str | None = None, loc: int | None = None, state: str = "todo",
-          conf: str | None = None, kind: str | None = None) -> dict:
-    names = _names(conn)
-    day_locs: dict[int, list[int]] = {}
-    for d, l in conn.execute("SELECT day_id, location_id FROM day_locations"):
-        day_locs.setdefault(d, []).append(l)
-    loc_names = {r[0]: r[1] for r in conn.execute("SELECT id, name FROM locations")}
+_base_cache: dict = {}
 
-    preds: dict[int, list] = {}
-    for r in conn.execute("SELECT image_id, rank, scientific, common, score, class_name FROM species_preds "
-                          "ORDER BY image_id, rank"):
-        preds.setdefault(r[0], []).append((r[2], r[3], r[4], r[5]))
-    confirms = {r["image_id"]: dict(r) for r in conn.execute("SELECT * FROM species_confirm")}
-    try:
-        empty = {r[0] for r in conn.execute("SELECT image_id FROM species_empty WHERE sim_none > sim_species")}
-    except Exception:
-        empty = set()
 
+def _base(conn, day, year, rating):
+    """Кадры под фильтром, их подсказки и склейка в серии. От решений не зависит — кэш до нового
+    прогона, пересчёта (rescore) или синхронизации: после архива это секунды на каждый запрос."""
+    ver = tuple(conn.execute(
+        "SELECT (SELECT COUNT(*) FROM species_crops), (SELECT MAX(processed_at) FROM species_crops), "
+        "(SELECT MAX(rowid) FROM species_preds), (SELECT COUNT(*) FROM species_preds), "
+        "(SELECT MAX(synced_at) FROM days), (SELECT COUNT(*) FROM photos)").fetchone())
+    if _base_cache.get("ver") != ver:
+        _base_cache.clear()
+        _base_cache["ver"] = ver
+    key = (day, year, rating)
+    if key in _base_cache:
+        return _base_cache[key]
+    where, args = ["c.status IN ('crop', 'full')"], []
+    if day:
+        where.append("d.date = ?")
+        args.append(day)
+    if year:
+        where.append("d.date LIKE ?")
+        args.append(f"{year}%")
+    if rating == "2+":
+        where.append("COALESCE(p.rating, 0) >= 2")
+    elif rating and rating.isdigit():
+        where.append("COALESCE(p.rating, 0) = ?")
+        args.append(int(rating))
     rows = conn.execute(
         "SELECT p.image_id, p.day_id, p.capture_time, p.rating, c.status AS kind, c.det_conf, d.date "
         "FROM photos p JOIN species_crops c ON c.image_id = p.image_id "
-        "JOIN days d ON d.id = p.day_id "
-        "WHERE c.status IN ('crop', 'full') "
-        + ("AND d.date = ? " if day else "")
-        + "ORDER BY p.day_id, p.capture_time, p.image_id", ([day] if day else [])).fetchall()
+        "JOIN days d ON d.id = p.day_id WHERE " + " AND ".join(where)
+        + " ORDER BY p.day_id, p.capture_time, p.image_id", args).fetchall()
+    # подсказки — только для кадров под фильтром: после архива их сотни тысяч
+    preds: dict[int, list] = {}
+    for r in conn.execute(
+            "SELECT sp.image_id, sp.rank, sp.scientific, sp.common, sp.score, sp.class_name FROM species_preds sp "
+            "JOIN photos p ON p.image_id = sp.image_id JOIN species_crops c ON c.image_id = sp.image_id "
+            "JOIN days d ON d.id = p.day_id WHERE " + " AND ".join(where) + " ORDER BY sp.image_id, sp.rank", args):
+        preds.setdefault(r[0], []).append((r[2], r[3], r[4], r[5]))
 
     # Отобранные (★2+) и неотобранные склеиваются в серии порознь: неразобранная серия
     # неотобранных — «unsel», в «Не разобрано» не попадает. Получил кадр ★2 — переедет сам.
     sel = [r for r in rows if (r["rating"] or 0) >= SELECTED_RATING]
     unsel = [r for r in rows if (r["rating"] or 0) < SELECTED_RATING]
     series = [(True, s) for s in _series(conn, sel, preds)] + [(False, s) for s in _series(conn, unsel, preds)]
+    if len(_base_cache) > 12:                        # не копить: фильтров немного, но всё же
+        for k in [k for k in _base_cache if k != "ver"][:6]:
+            del _base_cache[k]
+    _base_cache[key] = (rows, preds, series)
+    return _base_cache[key]
+
+
+def items(conn, *, day: str | None = None, loc: int | None = None, state: str = "todo",
+          conf: str | None = None, kind: str | None = None, year: str | None = None,
+          rating: str | None = None) -> dict:
+    """Серии для вкладки «Виды». rating: "0"…"5" — ровно столько звёзд, "2+" — отобранные."""
+    names = _names(conn)
+    day_locs: dict[int, list[int]] = {}
+    for d, l in conn.execute("SELECT day_id, location_id FROM day_locations"):
+        day_locs.setdefault(d, []).append(l)
+    loc_names = {r[0]: r[1] for r in conn.execute("SELECT id, name FROM locations")}
+
+    confirms = {r["image_id"]: dict(r) for r in conn.execute("SELECT * FROM species_confirm")}
+    try:
+        empty = {r[0] for r in conn.execute("SELECT image_id FROM species_empty WHERE sim_none > sim_species")}
+    except Exception:
+        empty = set()
+
+    rows, preds, series = _base(conn, day, year, rating)
 
     taxa = _taxa(names)
+    memo: dict[tuple, dict] = {}
+
+    def lab(sci, common, cls):                       # одно и то же название — тысячи раз
+        key = (sci, common, cls)
+        if key not in memo:
+            memo[key] = _label(sci, names, common, cls)
+        return memo[key]
+
     out = []
     counts = {"todo": 0, "unsel": 0, "confirmed": 0, "unid": 0, "rejected": 0, "none": 0}
     for selected, frames in series:
         d = frames[0]["day_id"]
         if loc and loc not in day_locs.get(d, []):
+            continue
+        # статус серии — по решениям, до сборки карточки: отфильтрованное не собираем
+        n = len(frames)
+        sts = [confirms[f["image_id"]]["status"] for f in frames if f["image_id"] in confirms]
+        if len(sts) < n:
+            st = "todo" if selected else "unsel"
+        elif "confirmed" in sts:
+            st = "confirmed"
+        elif "unid" in sts:
+            st = "unid"
+        elif all(x == "none" for x in sts):
+            st = "none"
+        else:
+            st = "rejected"
+        counts[st] += 1
+        if state != "all" and st != state:
             continue
         agg: dict[str, list] = {}
         fr_out = []
@@ -164,29 +227,15 @@ def items(conn, *, day: str | None = None, loc: int | None = None, state: str = 
             fr_out.append({
                 "id": f["image_id"], "time": (f["capture_time"] or "")[11:19], "kind": f["kind"],
                 "det": f["det_conf"], "empty": f["image_id"] in empty,
-                "top": [{**_label(s, names, cm, cl), "score": round(sc, 3)} for s, cm, sc, cl in ps[:3]],
+                "top": [{**lab(s, cm, cl), "score": round(sc, 3)} for s, cm, sc, cl in ps[:3]],
                 "decision": _decision(c, names),
             })
-        n = len(frames)
         top = sorted(((v[0] / n, s, v[1], v[2]) for s, v in agg.items()), reverse=True)[:3]
-        top = [{**_label(s, names, cm, cl), "score": round(sc, 3)} for sc, s, cm, cl in top]
+        top = [{**lab(s, cm, cl), "score": round(sc, 3)} for sc, s, cm, cl in top]
         kinds = {f["kind"] for f in frames}
         k = kinds.pop() if len(kinds) == 1 else "mixed"
         decided = [fr["decision"] for fr in fr_out if fr["decision"]]
-        if len(decided) < n:
-            st = "todo" if selected else "unsel"
-        elif any(x["status"] == "confirmed" for x in decided):
-            st = "confirmed"
-        elif any(x["status"] == "unid" for x in decided):
-            st = "unid"
-        elif all(x["status"] == "none" for x in decided):
-            st = "none"
-        else:
-            st = "rejected"
-        counts[st] += 1
         top1 = top[0]["score"] if top else 0
-        if state != "all" and st != state:
-            continue
         if conf in CONF_BUCKETS and not (CONF_BUCKETS[conf][0] <= top1 < CONF_BUCKETS[conf][1]):
             continue
         dets = [f["det_conf"] for f in frames if f["kind"] == "crop" and f["det_conf"] is not None]
@@ -315,10 +364,9 @@ def meta(conn) -> dict:
         "JOIN day_locations dl ON dl.location_id = l.id JOIN photos p ON p.day_id = dl.day_id "
         "JOIN species_crops c ON c.image_id = p.image_id AND c.status IN ('crop','full') "
         "GROUP BY l.id ORDER BY l.name")]
-    return {"days": days, "locations": locs, "series_gap_s": SERIES_GAP_S}
+    years = sorted({d["date"][:4] for d in days}, reverse=True)
+    return {"days": days, "locations": locs, "years": years, "series_gap_s": SERIES_GAP_S}
 
-
-SEEN_MIN = 0.9      # неотобранный кадр с такой уверенностью топ-1 — «видел, без хорошего кадра»
 
 
 def day_species(conn) -> dict[int, list[dict]]:
@@ -326,8 +374,8 @@ def day_species(conn) -> dict[int, list[dict]]:
     family_ru, n, unid, seen}]}.
     - подтверждённые;
     - «неопределимо» с группой (unid, sci — род или семейство), без группы — sci=None;
-    - seen — «видел, без хорошего кадра»: неотобранные неразобранные кадры с топ-1 ≥ SEEN_MIN,
-      если этот вид в тот день не подтверждён. Без решения Алексея — в лайфлист не идут."""
+    - seen — «видел, без хорошего кадра» по правилам archive.seen_frames, если этот вид в тот день
+      не подтверждён. Без решения Алексея — в лайфлист не идут."""
     names = _names(conn)
     taxa = None
     out: dict[int, dict[tuple, dict]] = {}
@@ -357,25 +405,12 @@ def day_species(conn) -> dict[int, list[dict]]:
                     "family": lab.get("family"), "family_ru": lab.get("family_ru"), "unid": False, "seen": False}
         add(r["day_id"], item, r["n"])
 
-    try:
-        empty = {r[0] for r in conn.execute("SELECT image_id FROM species_empty WHERE sim_none > sim_species")}
-    except Exception:
-        empty = set()
-    for r in conn.execute(
-            "SELECT p.day_id, p.image_id, sp.scientific, sp.common, sp.class_name FROM species_preds sp "
-            "JOIN photos p ON p.image_id = sp.image_id "
-            "JOIN species_crops c ON c.image_id = sp.image_id AND c.status IN ('crop', 'full') "
-            "WHERE sp.rank = 1 AND sp.score >= ? AND COALESCE(p.rating, 0) < ? "
-            "AND NOT EXISTS (SELECT 1 FROM species_confirm sc WHERE sc.image_id = p.image_id)",
-            (SEEN_MIN, SELECTED_RATING)):
-        if r["image_id"] in empty:
-            continue
-        lab = _label(r["scientific"], names, r["common"], r["class_name"])
-        if not lab.get("sci") or (False, lab["sci"]) in out.get(r["day_id"], {}) and \
-                not out[r["day_id"]][(False, lab["sci"])]["seen"]:
+    from . import archive                    # правила «видел» — общие с карточками вида и места
+    for f in archive.seen_frames(conn):
+        if (False, f["sci"]) in out.get(f["day_id"], {}) and not out[f["day_id"]][(False, f["sci"])]["seen"]:
             continue                                   # вид в этот день уже подтверждён
-        add(r["day_id"], {"sci": lab["sci"], "ru": lab.get("ru") or lab.get("en"), "group": lab.get("group", "other"),
-                          "family": lab.get("family"), "family_ru": lab.get("family_ru"),
+        add(f["day_id"], {"sci": f["sci"], "ru": f.get("ru") or f.get("en"), "group": f.get("group", "other"),
+                          "family": f.get("family"), "family_ru": f.get("family_ru"),
                           "unid": False, "seen": True}, 1)
 
     order = list(dict.fromkeys(list(GROUPS.values()) + ["other"]))

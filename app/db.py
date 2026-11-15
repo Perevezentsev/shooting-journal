@@ -143,6 +143,8 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     lrbridge.ensure_schema(conn)
     from . import gear           # EXIF для вкладки «Техника» (v0.9)
     gear.ensure_schema(conn)
+    from . import archive        # отклонённые кандидаты архива (v0.10)
+    archive.ensure_schema(conn)
     conn.commit()
     return conn
 

@@ -19,7 +19,7 @@ from . import db
 from .locations import KINDS, merge_locations, set_day_locations
 from .lrcat import Photo
 from .sync import sync_catalog
-from . import field, gear, inat, lifelist, lrbridge, plan, review, species, weather
+from . import archive, field, gear, inat, lifelist, lrbridge, plan, review, species, weather
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
@@ -400,16 +400,85 @@ def api_species_meta():
         return review.meta(conn)
 
 
+def _compact_series(res: dict) -> dict:
+    """Подсказки серий — [латынь, уверенность], а описание вида — один раз в res["labels"]:
+    после архива одни и те же названия повторялись бы в ответе сотни тысяч раз (десятки МБ).
+    Фронтенд разворачивает обратно при загрузке (spHydrate)."""
+    labels: dict[str, dict] = {}
+
+    def pack(lst):
+        out = []
+        for t in lst or []:
+            sci = t.get("sci")
+            if sci not in labels:
+                labels[sci] = {k: v for k, v in t.items() if k != "score"}
+            else:
+                for k, v in t.items():
+                    if k != "score" and labels[sci].get(k) is None and v is not None:
+                        labels[sci][k] = v
+            out.append([sci, t.get("score")])
+        return out
+
+    for s in res["series"]:
+        s["top"] = pack(s["top"])
+        s["cands"] = pack(s.get("cands"))
+        for fr in s["frames"]:
+            fr["top"] = pack(fr["top"])
+    res["labels"] = labels
+    return res
+
+
 @app.get("/api/species/items")
 def api_species_items(day: str | None = None, loc: int | None = None, state: str = "todo",
-                      conf: str | None = None, kind: str | None = None):
+                      conf: str | None = None, kind: str | None = None, year: str | None = None,
+                      rating: str | None = None):
     with db.connect() as conn:
-        res = review.items(conn, day=day, loc=loc, state=state, conf=conf, kind=kind)
+        res = review.items(conn, day=day, loc=loc, state=state, conf=conf, kind=kind,
+                           year=year or None, rating=rating or None)
+    res = _compact_series(res)
     cfg = _cfg_soft()
     if cfg.get("catalog_path") and res["series"]:
         # нарезать кропы первых карточек заранее, пока смотришь начало списка
         review.warm(db.connect, cfg, [s["rep"] for s in res["series"][:240]])
     return res
+
+
+@app.get("/api/species/firsts")
+def api_species_firsts():
+    """Кандидаты в первые встречи: неотобранный кадр раньше первой подтверждённой встречи вида."""
+    with db.connect() as conn:
+        res = archive.first_candidates(conn)
+    cfg = _cfg_soft()
+    if cfg.get("catalog_path") and res:
+        review.warm(db.connect, cfg, [x["cand"]["id"] for x in res[:120]] + [x["first"]["id"] for x in res[:120]])
+    return res
+
+
+@app.get("/api/species/maybe-new")
+def api_species_maybe_new():
+    """«Может быть, новый вид»: уверенно найден на неотобранных, но не в лайфлисте."""
+    with db.connect() as conn:
+        res = archive.maybe_new(conn)
+    cfg = _cfg_soft()
+    if cfg.get("catalog_path") and res:
+        review.warm(db.connect, cfg, [f["id"] for x in res[:80] for f in x["frames"]])
+    return res
+
+
+class SpeciesDismiss(BaseModel):
+    kind: str                           # first (key — кадр) | new (key — латынь вида)
+    key: str
+    undo: bool = False
+
+
+@app.post("/api/species/dismiss")
+def api_species_dismiss(body: SpeciesDismiss):
+    with db.connect() as conn:
+        try:
+            (archive.undismiss if body.undo else archive.dismiss)(conn, body.kind, body.key)
+        except ValueError:
+            raise HTTPException(400, "Неизвестный вид отклонения")
+    return {"ok": True}
 
 
 @app.get("/api/species/search")
