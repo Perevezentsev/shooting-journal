@@ -11,7 +11,9 @@
     S\t<id>\t<группа>\t<вид>\t<латынь>\t<старая группа>\t<старый вид>   — ключевое слово (заменить старое)
     R\t<id>\t<старая группа>\t<старый вид>         — снять слово: в журнале вида больше нет
     G\t<id>\t<lat>\t<lon>\t<старые lat>\t<старые lon> — координаты по треку
-    X\t<id>\t<старые lat>\t<старые lon>             — убрать записанные журналом координаты (рядом скрытая находка)
+    X\t<id>\t<старые lat>\t<старые lon>             — убрать записанные журналом координаты (кадр вне трека)
+    H\t<id>                                       — кадр ближе 200 м к скрытой находке: снять GPS в Lightroom,
+                                                    кто бы его ни поставил (каждый запуск; без GPS — ничего)
 
 Ответ плагина /api/lr/done — те же буквы о сделанном:
     S\t<id>\t<группа>\t<вид>\t<латынь>   R\t<id>   G\t<id>\t<lat>\t<lon>   O\t<id> (свои координаты)   X\t<id>
@@ -130,10 +132,12 @@ def pending(conn) -> list[tuple]:
         out.append(("G", img, f"{ll[0]:.6f}", f"{ll[1]:.6f}",
                     "" if old[0] is None else f"{old[0]:.6f}", "" if old[1] is None else f"{old[1]:.6f}"))
     for img, w in sorted(done.items()):
-        # записанные журналом координаты, которые больше отдавать нельзя: рядом скрытая находка,
-        # кадр вне трека или трек убран
-        if w["gps_state"] == "written" and img not in gps:
+        # записанные журналом координаты, которые больше отдавать нельзя: кадр вне трека или трек убран
+        if w["gps_state"] == "written" and img not in gps and img not in near:
             out.append(("X", img, f"{w['gps_lat']:.6f}", f"{w['gps_lon']:.6f}"))
+    # рядом со скрытой находкой координат в каталоге быть не должно — ни наших, ни поставленных
+    # Lightroom по треклогу или вручную; плагин проверяет и снимает при каждом запуске
+    out += [("H", img) for img in sorted(near)]
     return out
 
 
@@ -144,7 +148,7 @@ def pending_text(conn) -> str:
 
 def summary(conn) -> dict:
     rows = pending(conn)
-    count = {k: sum(1 for r in rows if r[0] == k) for k in "SRGX"}
+    count = {k: sum(1 for r in rows if r[0] == k) for k in "SRGXH"}
     w = conn.execute("SELECT SUM(kw_name IS NOT NULL) kw, SUM(gps_state = 'written') gps, "
                      "SUM(gps_state = 'own') own FROM lr_written").fetchone()
     return {"pending": count, "written": {"keywords": w["kw"] or 0, "gps": w["gps"] or 0, "own_gps": w["own"] or 0}}

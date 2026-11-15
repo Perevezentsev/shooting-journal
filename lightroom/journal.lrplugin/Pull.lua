@@ -33,14 +33,16 @@ LrFunctionContext.postAsyncTaskWithContext("Журнал: виды и коорд
 	end
 
 	local progress = LrProgressScope { title = "Журнал: сверяю кадры с каталогом", functionContext = context }
-	local jobs = { S = {}, R = {}, G = {}, X = {} }
+	local jobs = { S = {}, R = {}, G = {}, X = {}, H = {} }
 	local missing, gpsPhotos = 0, {}
 	for i, r in ipairs(rows) do
 		local photo = catalog:getPhotoByLocalId(tonumber(r[2]))
 		if jobs[r[1]] then
 			if photo then
 				table.insert(jobs[r[1]], { row = r, photo = photo })
-				if r[1] == "G" or r[1] == "X" then gpsPhotos[#gpsPhotos + 1] = photo end
+				if r[1] == "G" or r[1] == "X" or r[1] == "H" then gpsPhotos[#gpsPhotos + 1] = photo end
+			elseif r[1] == "H" then
+				-- кадра в каталоге нет — и координат у него нет
 			elseif r[1] == "R" or r[1] == "X" then
 				-- кадра в каталоге нет — снимать нечего, журнал просто забудет запись
 				table.insert(jobs[r[1]], { row = r })
@@ -78,6 +80,14 @@ LrFunctionContext.postAsyncTaskWithContext("Журнал: виды и коорд
 		end
 	end
 
+	-- Рядом со скрытыми находками координат в каталоге быть не должно, кто бы их ни поставил
+	-- (журнал, автопривязка по треклогу, вручную). Проверяется при каждом запуске.
+	local hideGps, hideClean = {}, {}
+	for _, j in ipairs(jobs.H) do
+		local gps = (gpsNow[j.photo] or {}).gps
+		if gps and gps.latitude then hideGps[#hideGps + 1] = j else hideClean[#hideClean + 1] = j end
+	end
+
 	local changedKw = 0
 	for _, j in ipairs(jobs.S) do
 		if j.row[7] ~= "" then changedKw = changedKw + 1 end
@@ -94,17 +104,19 @@ LrFunctionContext.postAsyncTaskWithContext("Журнал: виды и коорд
 	if #writeGps > 0 then add("Координаты по треку: " .. frames(#writeGps)) end
 	if #ownGps > 0 then add("Пропущу — у кадра свои координаты: " .. frames(#ownGps)) end
 	if #clearGps > 0 then add("Убрать координаты, записанные раньше (рядом скрытая находка или кадр вне трека): " .. frames(#clearGps)) end
+	if #hideGps > 0 then add("Уберу координаты (ближе 200 м к скрытым находкам): " .. frames(#hideGps)) end
 	if missing > 0 then add("Нет в этом каталоге: " .. frames(missing)) end
-	local toWrite = #jobs.S + #jobs.R + #writeGps + #clearGps
+	local toWrite = #jobs.S + #jobs.R + #writeGps + #clearGps + #hideGps
 	if toWrite == 0 then
-		if #sameGps + #ownGps + #keepX > 0 then
+		if #sameGps + #ownGps + #keepX + #hideClean > 0 then
 			local done = {}
 			for _, j in ipairs(sameGps) do done[#done + 1] = "G\t" .. j.row[2] .. "\t" .. j.row[3] .. "\t" .. j.row[4] end
 			for _, j in ipairs(ownGps) do done[#done + 1] = "O\t" .. j.row[2] end
 			for _, j in ipairs(keepX) do done[#done + 1] = "X\t" .. j.row[2] end
+			for _, j in ipairs(hideClean) do done[#done + 1] = "X\t" .. j.row[2] end
 			Journal.post("/api/lr/done", catalog, table.concat(done, "\n"))
 		end
-		LrDialogs.message("Журнал: записывать нечего", table.concat(info, "\n"), "info")
+		LrDialogs.message("Журнал: записывать нечего", #info > 0 and table.concat(info, "\n") or "Новых видов и координат нет.", "info")
 		return
 	end
 	local result = table.concat(info, "\n")
@@ -114,8 +126,14 @@ LrFunctionContext.postAsyncTaskWithContext("Журнал: виды и коорд
 	end
 
 	-- 4. Запись одной операцией
-	local done = {}
+	local done, failed = {}, 0
 	local function mark(s) done[#done + 1] = s end
+	-- Снять координаты кадра (и высоту, если её поставила автопривязка). false — Lightroom не дал.
+	local function clearGpsOf(photo)
+		local ok = pcall(function() photo:setRawMetadata("gps", nil) end)
+		pcall(function() photo:setRawMetadata("gpsAltitude", nil) end)
+		return ok
+	end
 	local status = catalog:withWriteAccessDo("Журнал: виды и координаты", function()
 		local cache = {}
 		local wp = LrProgressScope { title = "Журнал: записываю виды и координаты" }
@@ -149,10 +167,11 @@ LrFunctionContext.postAsyncTaskWithContext("Журнал: виды и коорд
 			mark("G\t" .. j.row[2] .. "\t" .. j.row[3] .. "\t" .. j.row[4])
 			step()
 		end
-		for _, j in ipairs(clearGps) do
-			j.photo:setRawMetadata("gps", nil)
-			mark("X\t" .. j.row[2])
-			step()
+		for _, list in ipairs({ clearGps, hideGps }) do
+			for _, j in ipairs(list) do
+				if clearGpsOf(j.photo) then mark("X\t" .. j.row[2]) else failed = failed + 1 end
+				step()
+			end
 		end
 		wp:done()
 	end, { timeout = 60 })
@@ -163,8 +182,13 @@ LrFunctionContext.postAsyncTaskWithContext("Журнал: виды и коорд
 	for _, j in ipairs(sameGps) do mark("G\t" .. j.row[2] .. "\t" .. j.row[3] .. "\t" .. j.row[4]) end
 	for _, j in ipairs(ownGps) do mark("O\t" .. j.row[2]) end
 	for _, j in ipairs(keepX) do mark("X\t" .. j.row[2]) end
+	for _, j in ipairs(hideClean) do mark("X\t" .. j.row[2]) end
 
 	-- 5. Журнал запоминает записанное: следующий запуск возьмёт только новое
 	Journal.post("/api/lr/done", catalog, table.concat(done, "\n"))
-	LrDialogs.message("Журнал: записано", result, "info")
+	if failed > 0 then
+		result = result .. "\n\nНе удалось убрать координаты: " .. frames(failed)
+			.. ". Сними их вручную: Метаданные → GPS, или напиши в журнал."
+	end
+	LrDialogs.message(failed > 0 and "Журнал: записано, но не всё" or "Журнал: записано", result, failed > 0 and "warning" or "info")
 end)
