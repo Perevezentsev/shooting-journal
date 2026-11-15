@@ -141,6 +141,8 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     species.ensure_schema(conn)
     from . import lrbridge       # что плагин Lightroom уже записал (v0.9)
     lrbridge.ensure_schema(conn)
+    from . import gear           # EXIF для вкладки «Техника» (v0.9)
+    gear.ensure_schema(conn)
     conn.commit()
     return conn
 

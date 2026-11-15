@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .locations import apply_rules, drop_orphans, norm_name, resolve, set_day_locations
+from . import gear
 from .lrcat import group_days, open_catalog, read_photos
 
 
@@ -23,6 +24,7 @@ def sync_catalog(conn: sqlite3.Connection, cfg: dict, rules_path: Path | None = 
         exclude=cfg.get("exclude", []),
         root_priority=cfg.get("root_priority", []),
     )
+    exif = gear.read_exif(lr, {p.image_id for p in photos})   # техника: камера, объектив, ISO…
     lr.close()
     days = group_days(photos)
 
@@ -94,6 +96,7 @@ def sync_catalog(conn: sqlite3.Connection, cfg: dict, rules_path: Path | None = 
             conn.execute("DELETE FROM days WHERE id = ?", (row["id"],))
             removed += 1
 
+    gear.store_exif(conn, exif)
     orphans = drop_orphans(conn)
     conn.commit()
     return {

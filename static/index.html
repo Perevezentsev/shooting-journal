@@ -163,6 +163,30 @@
   .runbadge { border: 1px solid var(--line); background: none; border-radius: 10px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
   .runbadge:hover { border-color: var(--accent); }
   #sp-run-info { font-size: 12px; }
+  #tab-gear h3 { margin: 22px 0 8px; font-size: 15px; }
+  .g-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 8px 28px; }
+  .g-table td { padding: 5px 10px; }
+  .g-table .sub { color: var(--muted); font-size: 12px; }
+  .g-table .tc { color: var(--warm); font-size: 12px; margin-left: 6px; }
+  .g-barcell { width: 32%; min-width: 80px; }
+  .g-bar { height: 8px; background: var(--accent); border-radius: 0 4px 4px 0; min-width: 2px; }
+  .g-rows { display: grid; grid-template-columns: max-content 1fr max-content; gap: 4px 10px; align-items: center;
+            font-size: 13px; font-variant-numeric: tabular-nums; }
+  .g-rows .lab { color: var(--muted); white-space: nowrap; }
+  .g-rows .val { text-align: right; white-space: nowrap; }
+  .g-rows .val small { color: var(--muted); }
+  .g-switch { font-size: 13px; font-weight: 400; margin-left: 12px; color: var(--muted); }
+  .g-switch label { margin-right: 10px; cursor: pointer; }
+  .g-cols-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .g-cols-chart rect.col { fill: var(--accent); }
+  .g-cols-chart rect.hit { fill: transparent; }
+  .g-cols-chart g:hover rect.col { opacity: .75; }
+  .g-cols-chart text { fill: var(--muted); font-size: 11px; }
+  .g-heat td, .g-heat th { padding: 4px 6px; text-align: center; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .g-heat th { text-transform: none; letter-spacing: 0; }
+  .g-heat td:first-child, .g-heat th:first-child { text-align: left; white-space: nowrap; font-size: 13px; }
+  .g-heat td.c { color: var(--ink); }
+  .daygear { font-size: 12px; margin-top: 3px; color: var(--muted); }
   .daysp { font-size: 12px; margin-top: 3px; line-height: 1.5; color: var(--muted); }
   .daysp button.link { font-size: 12px; }
   .daysp button.link.on { font-weight: 700; }
@@ -296,6 +320,7 @@
     <button data-tab="plan">Выходные</button>
     <button data-tab="species">Виды<span class="count" id="nav-species"></span></button>
     <button data-tab="life">Лайфлист<span class="count" id="nav-life"></span></button>
+    <button data-tab="gear">Техника</button>
   </nav>
   <div class="spacer"></div>
   <span id="status"></span>
@@ -412,6 +437,36 @@
       <span class="muted" id="lf-place-info"></span>
     </div>
     <div class="lf-months-wrap"><table class="lf-months" id="lf-months"></table></div>
+  </section>
+
+  <section id="tab-gear" class="hidden">
+    <div class="toolbar">
+      <select id="g-year"><option value="">Все годы</option></select>
+      <select id="g-camera"><option value="">Все камеры</option></select>
+    </div>
+    <div class="summary" id="g-summary"></div>
+    <div class="g-cols">
+      <div><h3>Камеры</h3><table class="g-table" id="g-cameras"></table></div>
+      <div><h3>Телеконвертеры</h3><div id="g-tc" class="muted"></div></div>
+    </div>
+    <h3>Объективы: отдача</h3>
+    <table class="g-table" id="g-lenses"></table>
+    <h3>Фокусные
+      <span class="g-switch"><label><input type="radio" name="g-focal" value="real" checked> реальные</label>
+      <label title="Умножено на кроп-фактор камеры: у Olympus ×2. Телефоны не считаются"><input type="radio" name="g-focal" value="eq"> в эквиваленте 35 мм</label></span></h3>
+    <div id="g-focal" class="g-cols-chart"></div>
+    <h3>ISO и доля отобранных</h3>
+    <div class="g-cols" id="g-iso"></div>
+    <div class="g-cols">
+      <div><h3>Выдержка</h3><div id="g-shutter"></div></div>
+      <div><h3>Диафрагма</h3><div id="g-aperture"></div></div>
+    </div>
+    <h3>Объективы и свет</h3>
+    <div class="summary">Доля кадров объектива при разной высоте солнца: низкое — до 10° над горизонтом, высокое — выше 30°.</div>
+    <div class="lf-months-wrap"><table class="g-heat" id="g-light"></table></div>
+    <h3>Чем снимал виды</h3>
+    <div class="summary">Только подтверждённые кадры.</div>
+    <table class="g-table" id="g-species"></table>
   </section>
 
   <section id="tab-species" class="hidden">
@@ -768,6 +823,7 @@ function renderDays() {
             d.track_m ? "трек " + (d.track_m / 1000).toFixed(1) + " км" : ""}${d.track_m && d.finds ? " · " : ""}${
             d.finds ? d.finds + " " + plural(d.finds, "заметка", "заметки", "заметок") : ""}</button></div>` : ""}
           ${daySpeciesHtml(d, f["d-species"])}
+          ${dayGearHtml(d)}
           ${d.location_manual ? '<div class="tag">задано вручную</div>' : ""}
           ${q && d.source_folder && norm(d.source_folder).includes(q) ? `<div class="tag">папка: ${hl(d.source_folder, q)}</div>` : ""}</td>
       <td class="hide-sm muted" style="white-space:nowrap">${hm(d.first_shot)}–${hm(d.last_shot)}</td>
@@ -1771,6 +1827,7 @@ $("#sync").addEventListener("click", async () => {
     status(`Готово: ${r.days} дн. (новых ${r.created}, удалено ${r.removed}) · правил ${r.rules} · дублей убрано ${r.duplicates} · исключено ${r.excluded}${
       r.species?.started ? ` · распознаю новые кадры: ${r.species.queued}` : ""}`, 10000);
     await loadAll();
+    gearState.stale = true;
     if (r.species?.started) pollSpeciesRun();
   } catch (err) { status("Ошибка: " + err.message, 8000); }
   b.disabled = false;
@@ -2253,7 +2310,7 @@ async function spDecide(i, action, t = null, source = null) {
     renderSpecies();
     spSelect(next);
     loadSpeciesMeta().catch(() => {});
-    sp.daysStale = true; life.stale = true;
+    sp.daysStale = true; life.stale = true; gearState.stale = true;
   } catch (err) { status("Ошибка: " + err.message, 6000); }
 }
 
@@ -2287,7 +2344,7 @@ async function spUndo() {
   try {
     await api("/api/species/undo", { method: "POST", body: JSON.stringify(u) });
     status("Отменено");
-    sp.daysStale = true; life.stale = true;
+    sp.daysStale = true; life.stale = true; gearState.stale = true;
     await loadSpecies(true);
     loadSpeciesMeta().catch(() => {});
   } catch (err) { status("Ошибка: " + err.message, 6000); }
@@ -2460,7 +2517,7 @@ function spScope() { const t = spScopeText(); return t ? ` (${esc(t)})` : ""; }
 async function spBatch(action, items, what) {
   const r = await api("/api/species/decide-batch", { method: "POST", body: JSON.stringify({ action, items }) });
   sp.undo.push(r.undo);
-  sp.daysStale = true; life.stale = true;
+  sp.daysStale = true; life.stale = true; gearState.stale = true;
   status(`${what}: ${r.series} ${plural(r.series, "серия", "серии", "серий")}, ${r.n} ${plural(r.n, "кадр", "кадра", "кадров")} — Z отменит`, 6000);
   await loadSpecies(true);
   loadSpeciesMeta().catch(() => {});
@@ -2749,12 +2806,148 @@ async function spFirstOpen() {
   catch (err) { status("Ошибка: " + err.message, 8000); }
 }
 
+// ---------- Техника ----------
+// EXIF из каталога: камеры, объективы (с телеконвертером), фокусные, ISO, выдержка, свет.
+const gearState = { data: null, stale: false, focal: "real" };
+const pct = (a, n) => n ? (100 * a / n) : 0;
+const pctTxt = (a, n) => n ? `${pct(a, n) < 1 && a ? pct(a, n).toFixed(1) : Math.round(pct(a, n))}%` : "—";
+const nf = n => n.toLocaleString("ru");
+
+function dayGearHtml(d) {
+  const g = d.gear || [];
+  if (!g.length) return "";
+  const show = g.slice(0, 3).map(x => `${esc(x.name)}${g.length > 1 ? ` <small>(${x.n})</small>` : ""}`);
+  return `<div class="daygear" title="Камера и объектив по EXIF, в скобках — кадров">чем снимал: ${show.join(", ")}${
+    g.length > 3 ? `, ещё ${g.length - 3}` : ""}</div>`;
+}
+
+async function loadGear() {
+  const y = $("#g-year").value, c = $("#g-camera").value;
+  $("#g-summary").textContent = "Считаю…";
+  try {
+    gearState.data = await api(`/api/gear?year=${encodeURIComponent(y)}&camera=${encodeURIComponent(c)}`);
+    gearState.stale = false;
+    renderGear();
+  } catch (err) { $("#g-summary").textContent = "Ошибка: " + err.message; }
+}
+
+function fillSelect(sel, values, first) {
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">${first}</option>` + values.map(v => `<option${v === cur ? " selected" : ""}>${esc(v)}</option>`).join("");
+}
+
+// Строка «подпись — полоса — значение»: полоса — доля ★2 (или другая величина), значение — текстом
+function gearRows(items, { label, value, bar }) {
+  const max = Math.max(...items.map(bar), 0) || 1;
+  return `<div class="g-rows">${items.map(x => `<span class="lab">${label(x)}</span>
+    <div title="${esc(value(x).replace(/<[^>]+>/g, ""))}"><div class="g-bar" style="width:${(100 * bar(x) / max).toFixed(1)}%"></div></div>
+    <span class="val">${value(x)}</span>`).join("")}</div>`;
+}
+
+const FOCAL_EDGES = [0, 20, 35, 50, 85, 135, 200, 300, 400, 500, 600, 700, 800, 1000, 1200];
+function focalBins(pairs) {
+  const bins = FOCAL_EDGES.map((lo, i) => ({ lo, hi: FOCAL_EDGES[i + 1] ?? Infinity, n: 0 }));
+  for (const [f, n] of pairs) {
+    const b = bins.find(b => f >= b.lo && f < b.hi) || bins[bins.length - 1];
+    b.n += n;
+  }
+  while (bins.length && !bins[bins.length - 1].n) bins.pop();
+  while (bins.length && !bins[0].n) bins.shift();
+  return bins;
+}
+
+function focalChart(pairs) {
+  const bins = focalBins(pairs), total = bins.reduce((s, b) => s + b.n, 0);
+  if (!bins.length) return `<div class="muted">Нет данных о фокусном.</div>`;
+  const W = 720, H = 180, top = 18, bottom = 22, gap = 4, bw = (W - gap * (bins.length - 1)) / bins.length;
+  const max = Math.max(...bins.map(b => b.n));
+  const name = b => b.hi === Infinity ? `${b.lo}+` : `${b.lo}–${b.hi}`;
+  const bars = bins.map((b, i) => {
+    const h = b.n ? Math.max(2, (H - top - bottom) * b.n / max) : 0, x = i * (bw + gap), y = H - bottom - h;
+    // скругление только у верхнего края столбца
+    const r = Math.min(4, bw / 2, h);
+    const path = h ? `M${x},${H - bottom} V${y + r} Q${x},${y} ${x + r},${y} H${x + bw - r} Q${x + bw},${y} ${x + bw},${y + r} V${H - bottom} Z` : "";
+    return `<g><title>${name(b)} мм: ${nf(b.n)} ${plural(b.n, "кадр", "кадра", "кадров")} (${pctTxt(b.n, total)})</title>
+      <rect class="hit" x="${x}" y="0" width="${bw}" height="${H}"></rect>
+      ${h ? `<path d="${path}" style="fill:var(--accent)"></path>` : ""}
+      ${b.n / total >= 0.03 ? `<text x="${x + bw / 2}" y="${y - 4}" text-anchor="middle">${pctTxt(b.n, total)}</text>` : ""}
+      <text x="${x + bw / 2}" y="${H - 6}" text-anchor="middle">${name(b)}</text></g>`;
+  }).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Распределение фокусных">${bars}</svg>
+    <div class="summary">мм · ${nf(total)} ${plural(total, "кадр", "кадра", "кадров")}</div>`;
+}
+
+function renderGear() {
+  const d = gearState.data;
+  fillSelect($("#g-year"), d.years, "Все годы");
+  fillSelect($("#g-camera"), d.cameras_all, "Все камеры");
+  const sel = d.cameras.reduce((s, c) => s + c.sel, 0), proc = d.cameras.reduce((s, c) => s + c.proc, 0);
+  $("#g-summary").innerHTML = d.total ? `кадров с EXIF <b>${nf(d.total)}</b> · ★2 и выше <b>${nf(sel)}</b> (${pctTxt(sel, d.total)}) · ★5 <b>${nf(proc)}</b> (${pctTxt(proc, d.total)})`
+    : "Нет EXIF — нажми «Обновить из каталога», журнал прочитает камеры и объективы.";
+  const maxCam = Math.max(...d.cameras.map(c => c.n), 1);
+  const head = `<thead><tr><th></th><th class="g-barcell"></th><th class="num">Кадров</th><th class="num">★2+</th><th class="num">★5</th></tr></thead>`;
+  const row = (name, x, max, extra = "") => `<tr><td>${name}${extra}</td>
+    <td class="g-barcell" title="${pctTxt(x.n, d.total)} всех кадров"><div class="g-bar" style="width:${(100 * x.n / max).toFixed(1)}%"></div></td>
+    <td class="num">${nf(x.n)}</td><td class="num" title="${nf(x.sel)} ${plural(x.sel, "кадр", "кадра", "кадров")}">${pctTxt(x.sel, x.n)}</td>
+    <td class="num" title="${nf(x.proc)} ${plural(x.proc, "кадр", "кадра", "кадров")}">${pctTxt(x.proc, x.n)}</td></tr>`;
+  $("#g-cameras").innerHTML = head + "<tbody>" + d.cameras.map(c => row(esc(c.name), c, maxCam)).join("") + "</tbody>";
+
+  $("#g-tc").innerHTML = d.teleconverter.length ? gearRows(d.teleconverter, {
+    label: x => esc(x.name), bar: x => x.n, value: x => `${nf(x.n)} <small>${plural(x.n, "кадр", "кадра", "кадров")}</small>`,
+  }) + `<div class="summary" style="margin-top:6px">Olympus пишет конвертер в имени объектива, у Nikon он виден по фокусному больше паспортного.</div>`
+    : "Кадров с телеконвертером не видно.";
+
+  const maxLens = Math.max(...d.lenses.map(l => l.n), 1);
+  const lensHead = `<thead><tr><th>Объектив</th><th class="g-barcell"></th><th class="num">Кадров</th><th class="num" title="Доля кадров с ★2 и выше">★2+</th><th class="num" title="Доля обработанных">★5</th></tr></thead>`;
+  $("#g-lenses").innerHTML = lensHead + "<tbody>" + d.lenses.map(l => row(esc(l.name), l, maxLens,
+    `${/ \+ /.test(l.name) ? `<span class="tc">конвертер</span>` : ""}${l.cameras.length && !l.name.includes(l.cameras[0]) ? `<div class="sub">${esc(l.cameras.slice(0, 2).join(", "))}</div>` : ""}`)).join("") + "</tbody>";
+
+  $("#g-focal").innerHTML = focalChart(gearState.focal === "eq" ? d.focal_eq : d.focal);
+
+  // ISO: по камере — доля отобранных в каждом диапазоне; камеры от 300 кадров
+  const isoCams = Object.entries(d.iso).filter(([, r]) => r.reduce((s, x) => s + x.n, 0) >= 300)
+    .sort((a, b) => b[1].reduce((s, x) => s + x.n, 0) - a[1].reduce((s, x) => s + x.n, 0));
+  $("#g-iso").innerHTML = isoCams.length ? isoCams.map(([cam, r]) => `<div><div class="summary" style="margin:0 0 4px"><b>${esc(cam)}</b> · полоса — доля ★2+</div>${
+    gearRows(r.filter(x => x.n >= 20), { label: x => `ISO ${x.iso > 12800 ? "> 12800" : nf(x.iso)}`, bar: x => pct(x.sel, x.n),
+      value: x => `${pctTxt(x.sel, x.n)} <small>из ${nf(x.n)}</small>` })}</div>`).join("") : `<div class="muted">Мало кадров.</div>`;
+
+  const share = { bar: x => pct(x.sel, x.n), value: x => `${pctTxt(x.sel, x.n)} <small>из ${nf(x.n)}</small>` };
+  $("#g-shutter").innerHTML = gearRows(d.shutter.filter(x => x.n >= 20), { ...share, label: x => esc(x.name) }) +
+    `<div class="summary" style="margin-top:6px">полоса — доля ★2+</div>`;
+  const apMin = Math.max(20, d.total * 0.005);
+  $("#g-aperture").innerHTML = gearRows(d.aperture.filter(x => x.n >= apMin), { ...share, label: x => esc(x.name) }) +
+    `<div class="summary" style="margin-top:6px">полоса — доля ★2+; редкие значения скрыты</div>`;
+
+  const lightCols = d.light.filter(([k]) => d.lenses.some(l => l.light[k]));
+  const lensesL = d.lenses.filter(l => l.n >= Math.max(50, d.total * 0.005)).slice(0, 12);
+  $("#g-light").innerHTML = `<thead><tr><th>Объектив</th>${lightCols.map(([, t]) => `<th>${esc(t)}</th>`).join("")}</tr></thead><tbody>${
+    lensesL.map(l => `<tr><td>${esc(l.name)}</td>${lightCols.map(([k, t]) => {
+      const v = l.light[k] || 0, p = pct(v, l.n);
+      return `<td class="c" style="background:color-mix(in srgb, var(--accent) ${Math.min(55, p * 1.2).toFixed(0)}%, transparent)"
+        title="${esc(l.name)} · ${esc(t)}: ${nf(v)} ${plural(v, "кадр", "кадра", "кадров")}">${v ? pctTxt(v, l.n) : ""}</td>`;
+    }).join("")}</tr>`).join("")}</tbody>`;
+
+  $("#g-species").innerHTML = d.species.length ? `<thead><tr><th>Вид</th><th class="num">Кадров</th><th>Объективы</th></tr></thead><tbody>${
+    d.species.slice(0, 40).map(x => `<tr><td>${esc(x.ru)}${x.ru !== x.sci ? ` <span class="sub"><i>${esc(x.sci)}</i></span>` : ""}</td>
+      <td class="num">${nf(x.n)}</td><td>${x.lenses.map(l => `${esc(l.name)} <span class="sub">${pctTxt(l.n, x.n)}</span>`).join(", ")}</td></tr>`).join("")}</tbody>`
+    : `<tbody><tr><td class="muted">Подтверждённых видов пока нет.</td></tr></tbody>`;
+}
+$("#g-year").addEventListener("change", loadGear);
+$("#g-camera").addEventListener("change", loadGear);
+document.querySelectorAll('input[name="g-focal"]').forEach(r => r.addEventListener("change", () => {
+  gearState.focal = r.value; store.set("gear-focal", r.value);
+  if (gearState.data) $("#g-focal").innerHTML = focalChart(gearState.focal === "eq" ? gearState.data.focal_eq : gearState.data.focal);
+}));
+gearState.focal = store.get("gear-focal", "real");
+document.querySelectorAll('input[name="g-focal"]').forEach(r => { r.checked = r.value === gearState.focal; });
+
 function showTab(tab) {
   document.querySelectorAll("nav button").forEach(x => x.classList.toggle("active", x.dataset.tab === tab));
-  for (const t of ["days", "locations", "map", "plan", "species", "life"]) $("#tab-" + t).classList.toggle("hidden", tab !== t);
+  for (const t of ["days", "locations", "map", "plan", "species", "life", "gear"]) $("#tab-" + t).classList.toggle("hidden", tab !== t);
   if (tab === "plan" && !planLoaded) loadPlan();
   if (tab === "species") openSpeciesTab();
   if (tab === "life" && (!life.data || life.stale)) loadLife();
+  if (tab === "gear" && (!gearState.data || gearState.stale)) loadGear();
   if (tab === "days" && sp.daysStale) {      // решения во «Видах» меняют виды в карточках дней
     sp.daysStale = false;
     api("/api/days").then(r => { days = r; fillDaySpecies(); renderDays(); }).catch(() => {});
@@ -2770,7 +2963,7 @@ restoreFilters(FILTERS.locs, "locs-filters");
 locSort = store.get("locs-sort", locSort);
 // Ссылки на вкладку и карту дня: #tab=life, #day-map=12 — для закладок и скриншотов
 const startHash = new URLSearchParams(location.hash.slice(1));
-const TABS = ["days", "locations", "map", "plan", "species", "life"];
+const TABS = ["days", "locations", "map", "plan", "species", "life", "gear"];
 showTab(TABS.includes(startHash.get("tab")) ? startHash.get("tab") : store.get("tab", "days"));
 pollSpeciesRun();
 api("/api/info").then(i => {

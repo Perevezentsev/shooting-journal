@@ -19,7 +19,7 @@ from . import db
 from .locations import KINDS, merge_locations, set_day_locations
 from .lrcat import Photo
 from .sync import sync_catalog
-from . import field, inat, lifelist, lrbridge, plan, review, species, weather
+from . import field, gear, inat, lifelist, lrbridge, plan, review, species, weather
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.json"
@@ -110,8 +110,10 @@ def api_days():
         tracks = {r[0]: r[1] for r in conn.execute("SELECT day_id, SUM(length_m) FROM tracks GROUP BY day_id")}
         nfinds = {r[0]: r[1] for r in conn.execute("SELECT day_id, COUNT(*) FROM finds GROUP BY day_id")}
         dsp = review.day_species(conn)
+        dgear = gear.day_gear(conn)
     for d in days:
         d["species"] = dsp.get(d["id"], [])
+        d["gear"] = dgear.get(d["id"], [])
         d["track_m"] = tracks.get(d["id"])
         d["finds"] = nfinds.get(d["id"], 0)
         d["weather"] = wx.get(d["id"])
@@ -378,6 +380,12 @@ async def api_lr_done(request: Request, catalog: str | None = None):
 def api_lr_summary():
     with db.connect() as conn:
         return lrbridge.summary(conn)
+
+
+@app.get("/api/gear")
+def api_gear(year: str | None = None, camera: str | None = None):
+    with db.connect() as conn:
+        return gear.summary(conn, year or None, camera or None)
 
 
 @app.get("/api/lifelist")

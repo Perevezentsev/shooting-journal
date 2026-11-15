@@ -202,6 +202,33 @@ def add_tracks(conn, coords: dict[str, tuple[float, float]], n_days: int = 3) ->
     return done
 
 
+# Выдуманный набор техники: (камера, объектив, фокусные, диафрагмы, вес)
+GEAR = [
+    ("NIKON Z 8", "NIKKOR Z 180-600mm f/5.6-6.3 VR", [180, 300, 400, 500, 600, 600, 600], [5.6, 6.3, 6.3, 8], 50),
+    ("NIKON Z 8", "NIKKOR Z 180-600mm f/5.6-6.3 VR", [840], [9, 11], 6),          # с телеконвертером ×1.4
+    ("OM-1", "M.300mm F4.0", [300], [4.0, 5.6], 22),
+    ("OM-1", "M.300mm F4.0 + MC-14", [420], [5.6, 8.0], 8),
+    ("NIKON Z 8", "NIKKOR Z 24-70mm f/4 S", [24, 35, 50, 70], [4.0, 8.0, 11], 8),
+    ("RICOH GR III", "GR LENS 18.3mm F2.8", [18.3], [2.8, 5.6], 6),
+]
+
+
+def add_exif(conn) -> int:
+    """EXIF для вкладки «Техника»: камера и объектив на весь день, параметры — на кадр."""
+    rows, day_gear = [], {}
+    for img, day_id, ct, rating in conn.execute("SELECT image_id, day_id, capture_time, rating FROM photos").fetchall():
+        if day_id not in day_gear:
+            day_gear[day_id] = random.choices(GEAR, [g[4] for g in GEAR], k=2)
+        cam, lens, focals, fnums, _ = random.choice(day_gear[day_id])
+        h = int(ct[11:13]) if ct else 10
+        dim = h < 7 or h > 19
+        iso = random.choice([400, 800, 1600, 3200, 6400, 12800] if dim else [100, 200, 400, 800, 1600, 3200])
+        shutter = random.choice([1/4000, 1/2000, 1/1000, 1/500, 1/250, 1/60] if not dim else [1/500, 1/250, 1/125, 1/30])
+        rows.append((img, cam, lens, random.choice(focals), random.choice(fnums), shutter, iso))
+    conn.executemany("INSERT INTO photo_exif VALUES (?,?,?,?,?,?,?)", rows)
+    return len(rows)
+
+
 def season_weight(d: date) -> float:
     # Весна и осень — пролёт, выезжают чаще
     return {3: 1.2, 4: 2.2, 5: 2.4, 6: 1.0, 7: 0.7, 8: 1.1, 9: 1.6, 10: 1.8, 11: 0.8}.get(d.month, 0.6)
@@ -253,9 +280,10 @@ def main() -> None:
 
     sp = add_species(conn, made)
     tracks = add_tracks(conn, {p[0]: (p[1], p[2]) for p in PLACES if p[1] is not None})
+    exif = add_exif(conn)
     conn.commit()
     print(f"Готово: {DEMO_PATH.relative_to(ROOT)} — {len(PLACES)} мест, {n} дней, {len(SPOTS)} точки; "
-          f"виды: {sp['photos']} кадров, подтверждено {sp['confirmed']}, «видел» {sp['seen']}; треков {tracks}")
+          f"виды: {sp['photos']} кадров, подтверждено {sp['confirmed']}, «видел» {sp['seen']}; треков {tracks}; EXIF {exif}")
     print("Запуск: JOURNAL_DB=data/demo.db ./run.sh")
 
 
