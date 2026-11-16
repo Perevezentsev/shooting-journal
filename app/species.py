@@ -278,10 +278,52 @@ class Scorer:
         self.log_prior = None if log_prior is None else \
             torch.as_tensor(log_prior, dtype=torch.float32, device=device)
 
+    # Сколько байт карты нужно на один кадр: логиты fp16 и fp32, softmax, маска кандидатов,
+    # добавка образцов — около шести копий строки «кадр × виды», седьмая — запас на фрагментацию.
+    ROW_COPIES = 7
+
+    def _rows_per_chunk(self) -> int:
+        """Сколько кадров считать за раз, чтобы строка «кадр × все виды» влезла в свободную память.
+        По всем видам TreeOfLife (867 тыс.) строка ~20 МБ — пачка в десятки–сотни кадров,
+        по региональному списку — тысячи."""
+        import torch
+        n_cols = self.txt.shape[1]
+        per_row = n_cols * 4 * self.ROW_COPIES + (len(self.ex) * 4 * 2 if self.ex is not None else 0)
+        if self.device != "cuda":
+            return max(1, min(4096, int(2e9 // per_row)))
+        free, _ = torch.cuda.mem_get_info()
+        return max(1, min(4096, int(free * 0.7 // per_row)))
+
     def topk(self, emb, k: int = TOP_K, ids=None, days=None) -> list[list[tuple[int, float]]]:
         """emb: (N, 768) нормированные, numpy. → [[(tol_idx, prob), ...], ...]
         ids — image_id кадров: кадр не служит образцом сам себе; days — исключить образцы
-        того же дня (для проверки качества)."""
+        того же дня (для проверки качества).
+        Кадры считаются пачками по свободной памяти карты: softmax нужен по всей строке видов,
+        а строки (кадры) независимы — результат тот же, что одним куском. Не хватило памяти —
+        пачка вдвое меньше, а не падение."""
+        import torch
+        n = len(emb)
+        if n == 0:
+            return []
+        step = self._rows_per_chunk()
+        ids = None if ids is None else list(ids)
+        days = None if days is None else list(days)
+        out: list = []
+        i = 0
+        while i < n:
+            part = slice(i, min(n, i + step))
+            try:
+                out += self._topk(emb[part], k, None if ids is None else ids[part],
+                                  None if days is None else days[part])
+                i = part.stop
+            except torch.cuda.OutOfMemoryError:
+                if step == 1:
+                    raise
+                step = max(1, step // 2)
+                torch.cuda.empty_cache()
+        return out
+
+    def _topk(self, emb, k, ids, days) -> list[list[tuple[int, float]]]:
         import torch
         with torch.no_grad():
             e = torch.as_tensor(emb, device=self.device).to(self.txt.dtype)
@@ -828,7 +870,14 @@ def run(conn: sqlite3.Connection, cfg: dict, *, all_photos=False, day=None, retr
     if prog.done and trip_days:
         print("Пересчитываю дни поездок их списком видов…")
         write_run_status(note="пересчитываю дни поездок")
-        rescore(conn, days=trip_days)
+        try:
+            del md, emb, scorer                   # освободить карту под полный список видов
+            torch.cuda.empty_cache() if device == "cuda" else None
+            rescore(conn, days=trip_days)
+        except Exception as e:                    # сам прогон уже сохранён — не падаем
+            conn.rollback()
+            print(f"Пересчёт дней поездок не удался ({type(e).__name__}: {str(e)[:120]}). "
+                  "Кадры распознаны и сохранены; досчитать: python -m app.species trips")
     left = len(queue(conn, all_photos, day, retry, scope))
     summary = ", ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
     print(f"Обработано {prog.done} ({summary}). В очереди осталось {left}."
@@ -1051,14 +1100,14 @@ def fill_families(conn, verbose=True) -> int:
     в подсказках (топ-3) или в подтверждениях. 30 видов на запрос, ~1 запрос/с."""
     import httpx
     from . import inat
-    rows = conn.execute("""
-        SELECT n.scientific, n.inat_id FROM species_names n
-        WHERE n.family IS NULL AND n.inat_id IS NOT NULL AND (
-          n.scientific IN (SELECT scientific FROM species_confirm)
-          OR n.scientific IN (SELECT a.scientific FROM species_alias a
-                              JOIN species_preds p ON p.scientific LIKE a.tol_sci || '%' WHERE p.rank <= 3)
-          OR EXISTS (SELECT 1 FROM species_preds p WHERE p.rank <= 3
-                     AND (p.scientific = n.scientific OR p.scientific LIKE n.scientific || ' %')))""").fetchall()
+    # Виды подсказок — «род вид» без автора; сопоставление множествами, а не LIKE по всем подсказкам:
+    # после архива подсказок сотни тысяч, и LIKE без индекса считал десятки минут.
+    in_preds = {" ".join(s.split(" (")[0].split()[:2]) for (s,) in conn.execute(
+        "SELECT DISTINCT scientific FROM species_preds WHERE rank <= 3") if s}
+    wanted = in_preds | {s for (s,) in conn.execute("SELECT DISTINCT scientific FROM species_confirm") if s}
+    wanted |= {sci for tol, sci in conn.execute("SELECT tol_sci, scientific FROM species_alias") if tol in in_preds}
+    rows = [r for r in conn.execute("SELECT scientific, inat_id FROM species_names "
+                                    "WHERE family IS NULL AND inat_id IS NOT NULL") if r[0] in wanted]
     if not rows:
         return 0
     by_id = {r[1]: r[0] for r in rows}
@@ -1478,6 +1527,7 @@ def main(argv=None):
     rp.add_argument("--top", type=int, default=15)
     rp.add_argument("--per", type=int, default=5)
     sub.add_parser("trips", help="списки iNat для поездок с координатами и пересчёт их дней")
+    sub.add_parser("families", help="догрузить из iNat названия и семейства видов из подсказок")
     s = sub.add_parser("show", help="результат по кадру")
     s.add_argument("image_id", type=int)
     rs = sub.add_parser("rescore", help="пересчитать топ-5 из эмбеддингов")
@@ -1511,6 +1561,12 @@ def main(argv=None):
 
     from .db import DB_PATH, connect
     conn = connect()
+    if a.cmd == "families":
+        n = fill_missing_names(conn)
+        f = fill_families(conn)
+        left = conn.execute("SELECT COUNT(*) FROM species_names WHERE family IS NULL AND inat_id IS NOT NULL").fetchone()[0]
+        print(f"Названий загружено: {n}; семейств: {f}. Без семейства осталось {left} (в основном виды не из подсказок).")
+        return
     if a.cmd == "status":
         _status(conn)
     elif a.cmd == "estimate":

@@ -62,18 +62,35 @@ def cached(conn: sqlite3.Connection, key: str):
     return json.loads(row["data"])
 
 
+RETRY_WAITS = (5, 15, 45, 90)     # пауза перед повтором при сетевой ошибке, 429 или 5xx, с
+
+
 def _get(client: httpx.Client, path: str, params: dict) -> dict:
+    """GET к API iNat не чаще PAUSE. Обрыв связи, «слишком много запросов» (429) и ошибки сервера
+    (5xx) — повтор с растущей паузой (RETRY_WAITS); не помогло — исключение, как раньше."""
     global _last
-    with _lock:
-        wait = PAUSE - (time.time() - _last)
-        if wait > 0:
-            time.sleep(wait)
-        try:
-            r = client.get(f"{API}{path}", params=params, timeout=30)
-        finally:
-            _last = time.time()
-    if r.status_code == 429:
-        raise RuntimeError("iNaturalist: слишком много запросов, попробуй через несколько минут")
+    for attempt in range(len(RETRY_WAITS) + 1):
+        with _lock:
+            wait = PAUSE - (time.time() - _last)
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                r = client.get(f"{API}{path}", params=params, timeout=30)
+                err = None
+            except httpx.TransportError as e:     # RemoteProtocolError, таймауты, обрыв соединения
+                r, err = None, e
+            finally:
+                _last = time.time()
+        retry = err is not None or r.status_code == 429 or r.status_code >= 500
+        if not retry:
+            break
+        if attempt == len(RETRY_WAITS):
+            if err is not None:
+                raise err
+            if r.status_code == 429:
+                raise RuntimeError("iNaturalist: слишком много запросов, попробуй через несколько минут")
+            break
+        time.sleep(RETRY_WAITS[attempt])
     r.raise_for_status()
     return r.json()
 
