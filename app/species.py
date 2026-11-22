@@ -125,6 +125,12 @@ CREATE TABLE IF NOT EXISTS species_alias (
     scientific  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_species_confirm_day ON species_confirm(day_id);
+-- «Похоже на без вида»: сходство кадра с «без вида» против подтверждённых (score_empty).
+CREATE TABLE IF NOT EXISTS species_empty (
+    image_id   INTEGER PRIMARY KEY,
+    sim_none   REAL,
+    sim_species REAL
+);
 """
 
 
@@ -914,7 +920,6 @@ def fetch_region(conn, bbox: list[float], refresh=False) -> dict:
     """Все виды iNat (research grade) в прямоугольнике, с числом наблюдений. Кэш — в inat_cache."""
     import httpx
     from . import inat
-    inat.ensure_schema(conn)
     key = f"{REGION_CACHE_KEY}|{','.join(f'{v:g}' for v in bbox)}"
     if not refresh:
         row = conn.execute("SELECT data FROM inat_cache WHERE key = ?", (key,)).fetchone()
@@ -983,7 +988,6 @@ def home_bbox(conn) -> list[float] | None:
     if r:
         return json.loads(r[0])
     from . import inat
-    inat.ensure_schema(conn)
     row = conn.execute("SELECT data FROM inat_cache WHERE key LIKE ? ORDER BY fetched_at LIMIT 1",
                        (f"{REGION_CACHE_KEY}|%",)).fetchone()
     return json.loads(row[0])["bbox"] if row else None
@@ -992,7 +996,6 @@ def home_bbox(conn) -> list[float] | None:
 def _region_cached(conn, bbox=None) -> dict | None:
     """Скачанный список видов: домашний (bbox=None) или поездки."""
     from . import inat
-    inat.ensure_schema(conn)
     bbox = bbox or home_bbox(conn)
     if not bbox:
         return None
@@ -1369,8 +1372,6 @@ def score_empty(conn, device: str = "cpu", exclude_days=False) -> int:
     сортировки — меток не ставит. Кадр не служит образцом сам себе."""
     import numpy as np
     import torch
-    conn.execute("CREATE TABLE IF NOT EXISTS species_empty (image_id INTEGER PRIMARY KEY, "
-                 "sim_none REAL, sim_species REAL)")
     ex = {"none": [], "confirmed": []}
     for img, st, d in conn.execute("SELECT image_id, status, day_id FROM species_confirm "
                                    "WHERE status IN ('none', 'confirmed')"):
@@ -1559,8 +1560,9 @@ def main(argv=None):
                                         "datasets--imageomics--TreeOfLife-200M")):
         os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
-    from .db import DB_PATH, connect
+    from .db import DB_PATH, connect, init_db
     conn = connect()
+    init_db(conn)
     if a.cmd == "families":
         n = fill_missing_names(conn)
         f = fill_families(conn)

@@ -283,7 +283,6 @@ def _moved_track(conn, day_ids: list[int], path: Path):
 
 
 def import_all(conn: sqlite3.Connection, cfg: dict) -> dict:
-    ensure_schema(conn)
     path_map = cfg.get("path_map")
     total = {"days_with_gpx": 0, "tracks": 0, "finds": 0}
     seen: set[str] = set()

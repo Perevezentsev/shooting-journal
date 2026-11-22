@@ -165,7 +165,6 @@ def default_dates(today: date | None = None) -> list[date]:
 
 
 def build(conn: sqlite3.Connection, dates: list[date], all_places: bool = False, force: bool = False) -> dict:
-    wx.ensure_schema(conn)
     locs = {r["id"]: dict(r) for r in conn.execute(
         "SELECT * FROM locations WHERE kind = 'place' AND lat IS NOT NULL")}
     defaults = {r["location_id"]: dict(r) for r in conn.execute("SELECT * FROM spots WHERE is_default = 1")}
@@ -259,7 +258,6 @@ def build(conn: sqlite3.Connection, dates: list[date], all_places: bool = False,
         })
 
     # iNaturalist: виды и наблюдатели рядом в эти месяцы (из кэша; чего нет — догрузит клиент)
-    inat.ensure_schema(conn)
     months = inat.months_around(dates, SEASON_DAYS)
     jobs = []
     for p in places:

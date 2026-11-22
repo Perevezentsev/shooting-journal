@@ -160,7 +160,6 @@ class Loader:
     def _run(self, connect, jobs) -> None:
         try:
             with connect() as conn, httpx.Client(headers=HEADERS) as client:
-                ensure_schema(conn)
                 for lat, lon, months in jobs:
                     fetch_place(conn, client, lat, lon, RADIUS_KM, months)
                     with self.lock:

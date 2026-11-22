@@ -112,7 +112,6 @@ def _ranges(dates: list[date]) -> list[tuple[date, date]]:
 
 def plan(conn: sqlite3.Connection) -> list[dict]:
     """Что нужно загрузить: по точкам — диапазоны дат, которых ещё нет в кэше."""
-    ensure_schema(conn)
     points = day_points(conn)
     latest = date.today() - timedelta(days=ARCHIVE_LAG_DAYS)
     by_key: dict[tuple, list[date]] = {}
@@ -250,7 +249,6 @@ def _avg(rows, f):
 
 def summaries(conn: sqlite3.Connection) -> dict[int, dict]:
     """Сводка погоды по каждому дню, для которого есть данные в кэше."""
-    ensure_schema(conn)
     points = day_points(conn)
     out = {}
     for d in conn.execute("SELECT id, date, first_shot, last_shot FROM days"):

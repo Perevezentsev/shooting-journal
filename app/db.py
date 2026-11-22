@@ -128,12 +128,30 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
+    """Лёгкое подключение: без DDL и миграций — их делает init_db() один раз при старте.
+
+    Ждёт блокировку до 30 с (стандартный таймаут sqlite3 — 5 с): пока синхронизация
+    или прогон распознавания пишут в базу, запрос не падает сразу, а ждёт освобождения.
+    """
     path = path or DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 30000")
+    return conn
+
+
+def init_db(conn: sqlite3.Connection) -> None:
+    """Одноразовая инициализация базы: схема, миграции, таблицы модулей, WAL.
+
+    Вызывается при старте приложения и в каждой CLI-точке входа, а не при каждом
+    подключении: DDL требует эксклюзивной блокировки и во время записи другого
+    процесса давал «database is locked» на каждый HTTP-запрос.
+    """
     conn.executescript(SCHEMA)
+    # Свойство файла базы, применяется один раз; вне транзакции, пока ничего не открыто.
+    conn.execute("PRAGMA journal_mode = WAL")
     _migrate(conn)
     from . import field          # треки и находки (v0.6)
     field.ensure_schema(conn)
@@ -145,8 +163,11 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     gear.ensure_schema(conn)
     from . import archive        # отклонённые кандидаты архива (v0.10)
     archive.ensure_schema(conn)
+    from . import inat            # кэш наблюдений iNaturalist
+    inat.ensure_schema(conn)
+    from . import weather         # кэш погоды Open-Meteo
+    weather.ensure_schema(conn)
     conn.commit()
-    return conn
 
 
 def is_demo(conn: sqlite3.Connection) -> bool:

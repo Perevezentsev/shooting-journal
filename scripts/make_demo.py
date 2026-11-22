@@ -284,6 +284,7 @@ def main() -> None:
     if DEMO_PATH.exists():
         DEMO_PATH.unlink()
     conn = db.connect(DEMO_PATH)
+    db.init_db(conn)
     conn.execute("INSERT INTO meta VALUES ('demo', '1')")
 
     ids = {}

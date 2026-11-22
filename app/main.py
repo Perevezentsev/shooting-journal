@@ -30,6 +30,13 @@ app = FastAPI(title="Журнал съёмок")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
+@app.on_event("startup")
+def _init_db():
+    """Схема и миграции — один раз при старте, а не при каждом подключении."""
+    with db.connect() as conn:
+        db.init_db(conn)
+
+
 def load_config() -> dict:
     if not CONFIG_PATH.exists():
         raise HTTPException(500, "Нет config.json — скопируй config.example.json и укажи путь к каталогу")
@@ -866,7 +873,6 @@ def api_inat_place(loc_id: int, months: str | None = None):
     if ms and not all(1 <= m <= 12 for m in ms):
         raise HTTPException(400, "Месяцы — от 1 до 12")
     with db.connect() as conn:
-        inat.ensure_schema(conn)
         loc = conn.execute("SELECT * FROM locations WHERE id = ?", (loc_id,)).fetchone()
         if not loc or loc["lat"] is None:
             raise HTTPException(404, "У места нет координат")

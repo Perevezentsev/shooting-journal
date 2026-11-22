@@ -571,7 +571,6 @@ def search_inat(conn, q: str, limit: int = 10) -> list[dict]:
     q = q.strip()
     if len(q) < 3:
         return []
-    inat.ensure_schema(conn)
     key = f"autocomplete|{_norm(q)}"
     data = inat.cached(conn, key)
     if data is None:
