@@ -46,9 +46,10 @@
   .stats .warn b { color: var(--warn); }
 
   table { width: 100%; border-collapse: collapse; background: var(--panel);
-          border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+          border: 1px solid var(--line); }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
   th { font-weight: 500; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  thead th { position: sticky; top: var(--stick-top, 65px); z-index: 2; background: var(--panel); }
   th.sortable { cursor: pointer; user-select: none; }
   th.sortable:hover, th.sorted { color: var(--ink); }
   tr:last-child td { border-bottom: 0; }
@@ -203,6 +204,27 @@
   .pick-grid button:hover { border-color: var(--accent); }
   .pick-grid img { width: 100%; height: 56px; object-fit: cover; margin: 0; max-width: none; }
   .find-pop img { max-width: 260px; max-height: 200px; display: block; margin: 4px 0; border-radius: 4px; }
+  .find-pop img.fp-zoomable { cursor: zoom-in; }
+
+  /* Крупный просмотр фото заметки: один оверлей на страницу, создаётся на время показа */
+  .photo-overlay { position: fixed; inset: 0; z-index: 2000; background: rgba(0,0,0,.88);
+    display: flex; align-items: center; justify-content: center; padding: 3vmin; }
+  .photo-overlay .po-close { position: absolute; top: 14px; right: 18px; background: none;
+    border: none; color: #fff; font-size: 28px; line-height: 1; cursor: pointer; opacity: .7; z-index: 2; }
+  .photo-overlay .po-close:hover { opacity: 1; }
+  /* Редактор заметки в оверлее: слева фото, справа те же поля, что в карточке */
+  .po-body { display: flex; gap: 20px; align-items: stretch; max-width: 96vw; max-height: 92vh; }
+  .po-photo { flex: 1; display: flex; align-items: center; justify-content: center; min-width: 0; }
+  .po-photo img { max-width: 100%; max-height: 92vh; object-fit: contain; border-radius: 4px; }
+  .po-photo .po-empty { color: var(--muted); border: 1px dashed var(--line); border-radius: 8px;
+    padding: 48px 40px; text-align: center; }
+  .po-form { width: 320px; background: var(--panel); color: var(--ink); border-radius: 8px;
+    padding: 16px; overflow-y: auto; }
+  .po-form b { display: block; margin-bottom: 8px; }
+  .po-form .fe-error { color: var(--warn); margin: 6px 0; }
+  .po-form textarea, .po-form input[type=text] { width: 100%; font: inherit; margin: 3px 0;
+    color: #1d2226; background: #fff; border: 1px solid #c9c6bc; }
+  .po-form label { display: block; margin: 6px 0; }
   .spot-icon { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; }
   .spot-icon span { display: block; width: 10px; height: 10px; background: #e3b04b; border: 2px solid #fff;
                     transform: rotate(45deg); box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
@@ -570,6 +592,16 @@
 
 <script>
 const $ = s => document.querySelector(s);
+
+/* Липкие шапки таблиц цепляются точно под шапку приложения: высота меряется,
+   а не зашита в px — при переносе меню на вторую строку или смене шрифта сдвиг не собьётся. */
+function syncStickTop() {
+  const h = document.querySelector("header");
+  if (h) document.documentElement.style.setProperty("--stick-top", h.offsetHeight + "px");
+}
+window.addEventListener("resize", syncStickTop);
+syncStickTop();
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(syncStickTop);
 const MONTHS = ["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
 const KIND_LABEL = { place: "место", trip: "поездка", other: "не место" };
 let days = [], locations = [], spots = [];
@@ -1939,7 +1971,9 @@ function findPopup(f, i) {
   const tz = dayView.data.utc_offset_h;
   return `<div class="find-pop" data-id="${f.id}">
     <b>Заметка ${i + 1}</b> · ${utcToLocal(f.time, tz).slice(0, 5)}
-    <div class="fp-photo">${f.photo || f.photo_file ? `<img src="/api/finds/${f.id}/photo?v=${photoVer}" alt=""
+    <button class="link fp-expand" title="развернуть заметку" onclick="openFindEditor(${f.id})">⤢</button>
+    <div class="fp-photo">${f.photo || f.photo_file ? `<img src="/api/finds/${f.id}/photo?v=${photoVer}" alt="" class="fp-zoomable"
+        onclick="openFindEditor(${f.id})"
         onerror="this.outerHTML='<div class=muted>фото не найдено в папке дня</div>'">` : ""}
       <button class="link" onclick="event.stopPropagation(); pickPhoto(${f.id})">${f.photo || f.photo_file ? "выбрать другое фото" : "привязать фото из папки"}</button></div>
     <input type="text" id="fp-name" placeholder="что это: погрыз бобра, дупло…" value="${esc(f.name)}">
@@ -1950,6 +1984,90 @@ function findPopup(f, i) {
 }
 
 let photoVer = Date.now();
+
+/* Полноэкранный редактор заметки: оверлей создаётся при открытии и удаляется при закрытии.
+   Поля и сохранение — те же, что в карточке (saveFind). Закрытие: Esc, фон, «✕»
+   (с изменениями — через confirm). Прокрутка и жесты не доходят до карты. */
+function openFindEditor(id) {
+  if (document.querySelector(".photo-overlay")) return;
+  const f = dayView.data.finds.find(x => x.id === id);
+  if (!f) return;
+  const hasPhoto = !!(f.photo || f.photo_file);
+
+  const ov = document.createElement("div");
+  ov.className = "photo-overlay";
+  const btn = document.createElement("button");
+  btn.className = "po-close";
+  btn.textContent = "✕";
+
+  const body = document.createElement("div");
+  body.className = "po-body";
+  const photoBox = document.createElement("div");
+  photoBox.className = "po-photo";
+  if (hasPhoto) {
+    const img = document.createElement("img");
+    img.src = `/api/finds/${f.id}/photo?v=${photoVer}`;
+    img.onerror = () => { photoBox.innerHTML = '<div class="po-empty">фото не найдено в папке дня</div>'; };
+    photoBox.appendChild(img);
+  } else {
+    photoBox.innerHTML = '<div class="po-empty">фото не привязано —<br>привязка в карточке заметки</div>';
+  }
+
+  // Поля — копия карточки (findPopup), id заменены на классы: карточка под оверлеем в DOM остаётся
+  const form = document.createElement("div");
+  form.className = "po-form";
+  form.innerHTML = `
+    <b>Заметка</b>
+    <input type="text" class="fe-name" placeholder="что это: погрыз бобра, дупло…" value="${esc(f.name || "")}">
+    <textarea class="fe-note" rows="6" placeholder="подробности">${esc(f.note || "")}</textarea>
+    <label><input type="checkbox" class="fe-sens" ${f.sensitive ? "checked" : ""}> скрытая: при выгрузке из журнала — только примерно, ~1 км</label>
+    <button class="btn small" type="button">Сохранить</button>
+    <div class="fe-error" hidden></div>`;
+  const saveBtn = form.querySelector("button");
+  const errBox = form.querySelector(".fe-error");
+  body.append(photoBox, form);
+  ov.append(btn, body);
+
+  let dirty = false;
+  form.addEventListener("input", () => { dirty = true; });
+
+  saveBtn.addEventListener("click", async () => {
+    const payload = { name: form.querySelector(".fe-name").value,
+                      note: form.querySelector(".fe-note").value,
+                      sensitive: form.querySelector(".fe-sens").checked };
+    try {
+      await api(`/api/finds/${f.id}`, { method: "PUT", body: JSON.stringify(payload) });
+      Object.assign(f, payload, { sensitive: payload.sensitive ? 1 : 0 });
+      // Тот же эффект, что у saveFind: пометки «рядом скрытая находка» у кадров
+      dayView.data = await api(`/api/days/${dayView.id}/field`);
+      close();
+      map.closePopup();
+      drawDay();
+      status("Заметка сохранена");
+    } catch (err) {
+      errBox.hidden = false;
+      errBox.textContent = "Ошибка: " + err.message;
+    }
+  });
+
+  const onKey = e => { if (e.key === "Escape") close(); };
+  const onWheel = e => e.preventDefault();                    // колесо не зумит карту под оверлеем
+  const onTouch = e => e.preventDefault();                    // жесты не двигают карту
+  const onClick = e => { if (e.target === ov || e.target === btn) close(); };
+  function close() {
+    if (dirty && !confirm("Закрыть без сохранения?")) return;
+    document.removeEventListener("keydown", onKey);
+    ov.removeEventListener("wheel", onWheel);
+    ov.removeEventListener("touchmove", onTouch);
+    ov.removeEventListener("click", onClick);
+    ov.remove();
+  }
+  document.addEventListener("keydown", onKey);
+  ov.addEventListener("wheel", onWheel, { passive: false });
+  ov.addEventListener("touchmove", onTouch, { passive: false });
+  ov.addEventListener("click", onClick);
+  document.body.appendChild(ov);
+}
 
 // Выбор фото заметки из снимков телефона в папке дня
 async function pickPhoto(id) {
@@ -3095,6 +3213,7 @@ function showTab(tab) {
   }
   document.querySelector("main").classList.toggle("wide", tab === "map");
   store.set("tab", tab);
+  syncStickTop();                // меню могло перенестись на вторую строку — пересчитать отступ шапок таблиц
   if (tab === "map") { initMap(); setTimeout(() => map.invalidateSize(), 0); }
 }
 document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
